@@ -81,8 +81,9 @@ class AgentService {
           4. For 'uninstall_app' or 'launch_app', you MUST use the exact 'packageName' (e.g., 'com.classnow'). If you don't know it, use 'list_apps' first.
           5. Ensure all tool arguments are valid JSON. Avoid extra characters or invalid syntax in your function calls.
           6. If a tool fails, explain the failure clearly to the user instead of showing raw technical errors.
+          7. You can DOWNLOAD files (like APKs) if the user provides a link or if you find one via search.
           
-          Capabilities: Files, Apps, Flashlight, Volume, Vibration, Clipboard, Contacts, Calendar, WhatsApp.
+          Capabilities: Files, Apps, Flashlight, Volume, Vibration, Clipboard, Contacts, Calendar, WhatsApp, Downloads.
         ''',
       ),
     );
@@ -101,6 +102,10 @@ class AgentService {
         function: FunctionObject(
           name: 'get_device_info',
           description: 'Retrieves the current device hardware info, battery level, and available storage space.',
+          parameters: {
+            'type': 'object',
+            'properties': {},
+          },
         ),
       ),
       ChatCompletionTool(
@@ -159,6 +164,10 @@ class AgentService {
         function: FunctionObject(
           name: 'list_apps',
           description: 'Lists all installed applications on the device (names and package IDs).',
+          parameters: {
+            'type': 'object',
+            'properties': {},
+          },
         ),
       ),
       ChatCompletionTool(
@@ -267,6 +276,31 @@ class AgentService {
         function: FunctionObject(
           name: 'get_network_info',
           description: 'Retrieves public IP and connectivity status.',
+          parameters: {
+            'type': 'object',
+            'properties': {},
+          },
+        ),
+      ),
+      ChatCompletionTool(
+        type: ChatCompletionToolType.function,
+        function: FunctionObject(
+          name: 'download_file',
+          description: 'Downloads a file or APK from a URL to the device Downloads folder.',
+          parameters: {
+            'type': 'object',
+            'properties': {
+              'url': {
+                'type': 'string',
+                'description': 'The direct URL of the file to download.',
+              },
+              'fileName': {
+                'type': 'string',
+                'description': 'The name to save the file as (e.g. "app.apk").',
+              },
+            },
+            'required': ['url', 'fileName'],
+          },
         ),
       ),
       ChatCompletionTool(
@@ -291,6 +325,10 @@ class AgentService {
         function: FunctionObject(
           name: 'clipboard_paste',
           description: 'Reads text from the device clipboard.',
+          parameters: {
+            'type': 'object',
+            'properties': {},
+          },
         ),
       ),
       ChatCompletionTool(
@@ -385,19 +423,21 @@ class AgentService {
 
         // Agent Loop for tool calling
         while (message.toolCalls != null && message.toolCalls!.isNotEmpty) {
+          final List<ChatCompletionMessage> toolOutputs = [];
           for (final toolCall in message.toolCalls!) {
             if (toolCall is ChatCompletionMessageToolCall) {
+              _statusController.add('Agent is ${toolCall.function.name.replaceAll('_', ' ')}...');
               final result = await _executeTool(
                 toolCall.function.name,
                 toolCall.function.arguments,
               );
-              _statusController.add('Agent is ${toolCall.function.name.replaceAll('_', ' ')}...');
-              _messages.add(ChatCompletionMessage.tool(
+              toolOutputs.add(ChatCompletionMessage.tool(
                 toolCallId: toolCall.id,
                 content: jsonEncode(result),
               ));
             }
           }
+          _messages.addAll(toolOutputs);
 
           final nextRequest = CreateChatCompletionRequest(
             model: ChatCompletionModel.modelId('llama-3.3-70b-versatile'),
@@ -419,10 +459,14 @@ class AgentService {
         await _dbService.saveMessage('assistant', message.content ?? '', sessionId);
         return message.content ?? 'No response';
       } catch (e) {
+        _statusController.add(''); // Clear status
         if (e.toString().contains('503') || e.toString().contains('429')) {
           retryCount++;
           await Future.delayed(Duration(seconds: 2 * retryCount)); // Exponential backoff
           continue;
+        }
+        if (e.toString().contains('Failed to call a function')) {
+          return 'I encountered a slight technical glitch while trying to use my tools. Could you try rephrasing your request?';
         }
         return 'Error: $e';
       }
@@ -480,6 +524,11 @@ class AgentService {
           final duration = args['durationMs'] as int? ?? 500;
           await _utilityService.vibrate(duration: duration);
           return {'success': true};
+        case 'download_file':
+          final url = args['url'] as String? ?? '';
+          final name = args['fileName'] as String? ?? 'downloaded_file';
+          final result = await _fileService.downloadFile(url, name);
+          return {'result': result};
         case 'set_volume':
           final level = (args['level'] as num? ?? 0.5).toDouble();
           await _utilityService.setVolume(level);

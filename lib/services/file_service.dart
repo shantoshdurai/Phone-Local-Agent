@@ -1,6 +1,8 @@
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:http/http.dart' as http;
+import 'package:path/path.dart' as p;
 
 class FileMetadata {
   final String path;
@@ -42,7 +44,6 @@ class FileService {
       }
       return false;
     }
-    // For iOS, standard permissions applies when accessing specific directories.
     return true; 
   }
 
@@ -98,7 +99,6 @@ class FileService {
     try {
       final file = File(filePath);
       if (await file.exists()) {
-        // Read only first 2000 chars to prevent massive context overflow
         final content = await file.readAsString();
         if (content.length > 2000) {
           return content.substring(0, 2000) + '... [truncated]';
@@ -122,6 +122,32 @@ class FileService {
     } catch (e) {
       print('Error deleting file: $e');
       return false;
+    }
+  }
+
+  Future<String> downloadFile(String url, String fileName) async {
+    try {
+      final hasPermission = await requestPermissions();
+      if (!hasPermission) return 'Error: Storage permission denied';
+
+      final response = await http.get(Uri.parse(url));
+      if (response.statusCode == 200) {
+        String downloadPath = '';
+        if (Platform.isAndroid) {
+          downloadPath = '/storage/emulated/0/Download';
+        } else {
+          final dir = await getApplicationDocumentsDirectory();
+          downloadPath = dir.path;
+        }
+
+        final file = File(p.join(downloadPath, fileName));
+        await file.writeAsBytes(response.bodyBytes);
+        return 'Successfully downloaded to: ${file.path}';
+      } else {
+        return 'Error: Failed to download file. Status code: ${response.statusCode}';
+      }
+    } catch (e) {
+      return 'Error downloading file: $e';
     }
   }
 }
