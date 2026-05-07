@@ -40,6 +40,26 @@ class AgentService {
     );
 
     _messages.clear();
+    await _loadHistory();
+    if (_messages.isEmpty) {
+      _addSystemInstruction();
+    }
+  }
+
+  Future<void> _loadHistory() async {
+    final history = await _dbService.getChatHistory();
+    for (var msg in history) {
+      final role = msg['role'] as String;
+      final content = msg['content'] as String;
+      if (role == 'user') {
+        _messages.add(ChatCompletionMessage.user(content: ChatCompletionUserMessageContent.string(content)));
+      } else if (role == 'assistant') {
+        _messages.add(ChatCompletionMessage.assistant(content: content));
+      }
+    }
+  }
+
+  void _addSystemInstruction() {
     _messages.add(
       ChatCompletionMessage.system(
         content: '''
@@ -58,6 +78,7 @@ class AgentService {
 
   Future<String> sendMessage(String text) async {
     _messages.add(ChatCompletionMessage.user(content: ChatCompletionUserMessageContent.string(text)));
+    await _dbService.saveMessage('user', text);
 
     int retryCount = 0;
     const int maxRetries = 3;

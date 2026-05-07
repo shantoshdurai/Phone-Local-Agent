@@ -19,7 +19,7 @@ class DatabaseService {
     String path = join(await getDatabasesPath(), 'agent_memory.db');
     return await openDatabase(
       path,
-      version: 2,
+      version: 3,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
     );
@@ -28,6 +28,16 @@ class DatabaseService {
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
     if (oldVersion < 2) {
       await db.execute('ALTER TABLE files ADD COLUMN last_accessed TEXT');
+    }
+    if (oldVersion < 3) {
+      await db.execute('''
+        CREATE TABLE chat_history (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          role TEXT,
+          content TEXT,
+          timestamp TEXT
+        )
+      ''');
     }
   }
 
@@ -41,6 +51,15 @@ class DatabaseService {
         size INTEGER,
         modified_date TEXT,
         last_accessed TEXT
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE chat_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        role TEXT,
+        content TEXT,
+        timestamp TEXT
       )
     ''');
 
@@ -76,6 +95,25 @@ class DatabaseService {
       );
     }
     await batch.commit(noResult: true);
+  }
+
+  Future<void> saveMessage(String role, String content) async {
+    final db = await database;
+    await db.insert('chat_history', {
+      'role': role,
+      'content': content,
+      'timestamp': DateTime.now().toIso8601String(),
+    });
+  }
+
+  Future<List<Map<String, dynamic>>> getChatHistory() async {
+    final db = await database;
+    return await db.query('chat_history', orderBy: 'timestamp ASC');
+  }
+
+  Future<void> clearChatHistory() async {
+    final db = await database;
+    await db.delete('chat_history');
   }
 
   Future<List<Map<String, dynamic>>> searchFiles(String query) async {

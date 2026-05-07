@@ -51,6 +51,9 @@ class LocalAgentApp extends StatelessWidget {
   }
 }
 
+import 'package:flutter/services.dart';
+import 'services/database_service.dart';
+
 class ChatMessage {
   final String text;
   final bool isUser;
@@ -70,6 +73,7 @@ class _ChatScreenState extends State<ChatScreen> {
   final TextEditingController _textController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   final AgentService _agentService = AgentService();
+  final DatabaseService _dbService = DatabaseService();
   bool _isTyping = false;
   bool _isInitializing = true;
 
@@ -82,10 +86,22 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _initAgent() async {
     try {
       await _agentService.initialize();
+      final history = await _dbService.getChatHistory();
+      
       setState(() {
-        _messages.add(ChatMessage(text: "Hello! I'm your local AI agent. I have loaded my tools. How can I help you today?", isUser: false));
+        if (history.isEmpty) {
+          _messages.add(ChatMessage(text: "Hello! I'm your local AI agent. I have loaded my tools. How can I help you today?", isUser: false));
+        } else {
+          for (var msg in history) {
+            _messages.add(ChatMessage(
+              text: msg['content'] as String,
+              isUser: (msg['role'] as String) == 'user',
+            ));
+          }
+        }
         _isInitializing = false;
       });
+      _scrollToBottom();
     } catch (e) {
       setState(() {
         _messages.add(ChatMessage(text: "Failed to initialize agent: $e", isUser: false));
@@ -224,77 +240,90 @@ class _ChatScreenState extends State<ChatScreen> {
 
     return Align(
       alignment: message.isUser ? Alignment.centerRight : Alignment.centerLeft,
-      child: Container(
-        margin: const EdgeInsets.only(bottom: 16.0),
-        padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
-        constraints: BoxConstraints(
-          maxWidth: MediaQuery.of(context).size.width * 0.75,
-        ),
-        decoration: BoxDecoration(
-          color: message.isUser 
-            ? Theme.of(context).colorScheme.primary.withValues(alpha: 0.8) 
-            : (isError ? Colors.red.withValues(alpha: 0.2) : Theme.of(context).colorScheme.surface),
-          border: isError ? Border.all(color: Colors.red.withValues(alpha: 0.5)) : null,
-          borderRadius: BorderRadius.only(
-            topLeft: const Radius.circular(20),
-            topRight: const Radius.circular(20),
-            bottomLeft: Radius.circular(message.isUser ? 20 : 0),
-            bottomRight: Radius.circular(message.isUser ? 0 : 20),
+      child: GestureDetector(
+        onLongPress: () {
+          Clipboard.setData(ClipboardData(text: message.text));
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Copied to clipboard'),
+              duration: Duration(seconds: 1),
+            ),
+          );
+        },
+        child: Container(
+          margin: const EdgeInsets.only(bottom: 16.0),
+          padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
+          constraints: BoxConstraints(
+            maxWidth: MediaQuery.of(context).size.width * 0.75,
           ),
-          boxShadow: [
-            if (message.isUser)
+          decoration: BoxDecoration(
+            color: message.isUser 
+              ? Theme.of(context).colorScheme.primary.withValues(alpha: 0.8) 
+              : (isError ? Colors.red.withValues(alpha: 0.2) : Theme.of(context).colorScheme.surface),
+            border: isError ? Border.all(color: Colors.red.withValues(alpha: 0.5)) : null,
+            borderRadius: BorderRadius.only(
+              topLeft: const Radius.circular(20),
+              topRight: const Radius.circular(20),
+              bottomLeft: Radius.circular(message.isUser ? 20 : 0),
+              bottomRight: Radius.circular(message.isUser ? 0 : 20),
+            ),
+            boxShadow: [
               BoxShadow(
-                color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.3),
+                color: (message.isUser 
+                  ? Theme.of(context).colorScheme.primary 
+                  : Colors.black).withValues(alpha: 0.2),
                 blurRadius: 10,
                 offset: const Offset(0, 4),
               ),
-          ],
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            message.isUser
-                ? Text(
-                    message.text,
-                    style: const TextStyle(fontSize: 16),
-                  )
-                : MarkdownBody(
-                    data: message.text,
-                    styleSheet: MarkdownStyleSheet(
-                      p: const TextStyle(fontSize: 16, color: Colors.white),
-                      code: TextStyle(
-                        backgroundColor: Colors.black.withValues(alpha: 0.5),
-                        fontFamily: 'monospace',
-                        fontSize: 14,
-                      ),
-                      codeblockDecoration: BoxDecoration(
-                        color: Colors.black.withValues(alpha: 0.5),
-                        borderRadius: BorderRadius.circular(8),
+            ],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              message.isUser
+                  ? Text(
+                      message.text,
+                      style: const TextStyle(fontSize: 16),
+                    )
+                  : MarkdownBody(
+                      data: message.text,
+                      selectable: true,
+                      styleSheet: MarkdownStyleSheet(
+                        p: const TextStyle(fontSize: 16, color: Colors.white),
+                        code: TextStyle(
+                          backgroundColor: Colors.black.withValues(alpha: 0.5),
+                          fontFamily: 'monospace',
+                          fontSize: 14,
+                        ),
+                        codeblockDecoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.5),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
                       ),
                     ),
-                  ),
-            if (isError && isInvalidKey) ...[
-              const SizedBox(height: 12),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton.icon(
-                  onPressed: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (context) => const ApiSetupScreen()),
-                    );
-                  },
-                  icon: const Icon(Icons.vpn_key_rounded, size: 18),
-                  label: const Text('Update API Key'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.redAccent,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 8),
+              if (isError && isInvalidKey) ...[
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    onPressed: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (context) => const ApiSetupScreen()),
+                      );
+                    },
+                    icon: const Icon(Icons.vpn_key_rounded, size: 18),
+                    label: const Text('Update API Key'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.redAccent,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                    ),
                   ),
                 ),
-              ),
+              ],
             ],
-          ],
+          ),
         ),
       ),
     );
