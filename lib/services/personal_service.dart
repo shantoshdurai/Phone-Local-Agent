@@ -1,4 +1,4 @@
-import 'package:flutter_contacts/flutter_contacts.dart';
+import 'package:flutter_contacts/flutter_contacts.dart' hide Event;
 import 'package:device_calendar/device_calendar.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:intl/intl.dart';

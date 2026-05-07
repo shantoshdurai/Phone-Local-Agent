@@ -5,7 +5,7 @@ import 'package:url_launcher/url_launcher.dart';
 class AppService {
   Future<List<Map<String, dynamic>>> getInstalledApps() async {
     try {
-      List<AppInfo> apps = await InstalledApps.installedApps(
+      List<AppInfo> apps = await InstalledApps.getInstalledApps(
         excludeSystemApps: true,
         withIcon: false,
       );
