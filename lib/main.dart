@@ -75,31 +75,54 @@ class _ChatScreenState extends State<ChatScreen> {
   final DatabaseService _dbService = DatabaseService();
   bool _isTyping = false;
   bool _isInitializing = true;
+  String _currentStatus = '';
+  int? _currentSessionId;
+  List<Map<String, dynamic>> _sessions = [];
 
   @override
   void initState() {
     super.initState();
     _initAgent();
+    _agentService.statusStream.listen((status) {
+      if (mounted) {
+        setState(() {
+          _currentStatus = status;
+        });
+      }
+    });
+  }
+
+  Future<void> _refreshSessions() async {
+    final sessions = await _dbService.getSessions();
+    if (mounted) {
+      setState(() {
+        _sessions = sessions;
+      });
+    }
   }
 
   Future<void> _initAgent() async {
     try {
       await _agentService.initialize();
-      final history = await _dbService.getChatHistory();
+      await _refreshSessions();
       
-      setState(() {
-        if (history.isEmpty) {
-          _messages.add(ChatMessage(text: "Hello! I'm your local AI agent. I have loaded my tools. How can I help you today?", isUser: false));
-        } else {
+      if (_sessions.isNotEmpty) {
+        _currentSessionId = _sessions.first['id'] as int;
+        await _agentService.loadSession(_currentSessionId!);
+        final history = await _dbService.getChatHistory(_currentSessionId!);
+        setState(() {
+          _messages.clear();
           for (var msg in history) {
             _messages.add(ChatMessage(
               text: msg['content'] as String,
               isUser: (msg['role'] as String) == 'user',
             ));
           }
-        }
-        _isInitializing = false;
-      });
+          _isInitializing = false;
+        });
+      } else {
+        await _createNewChat(isInitial: true);
+      }
       _scrollToBottom();
     } catch (e) {
       setState(() {
@@ -107,6 +130,39 @@ class _ChatScreenState extends State<ChatScreen> {
         _isInitializing = false;
       });
     }
+  }
+
+  Future<void> _createNewChat({bool isInitial = false}) async {
+    final newId = await _dbService.createSession('New Chat');
+    _currentSessionId = newId;
+    await _agentService.loadSession(newId);
+    await _refreshSessions();
+    
+    setState(() {
+      _messages.clear();
+      _messages.add(ChatMessage(text: "Hello! I'm your local AI agent. I have loaded my tools. How can I help you today?", isUser: false));
+      if (!isInitial) {
+        _isInitializing = false;
+      }
+    });
+  }
+
+  Future<void> _switchSession(int sessionId) async {
+    _currentSessionId = sessionId;
+    await _agentService.loadSession(sessionId);
+    final history = await _dbService.getChatHistory(sessionId);
+    
+    setState(() {
+      _messages.clear();
+      for (var msg in history) {
+        _messages.add(ChatMessage(
+          text: msg['content'] as String,
+          isUser: (msg['role'] as String) == 'user',
+        ));
+      }
+    });
+    _scrollToBottom();
+    Navigator.pop(context); // Close drawer
   }
 
   void _handleSubmitted(String text) async {
@@ -122,7 +178,15 @@ class _ChatScreenState extends State<ChatScreen> {
 
     // Send to agent
     try {
-      final response = await _agentService.sendMessage(text);
+      // If session title is 'New Chat', update it with the first 20 chars of prompt
+      final session = _sessions.firstWhere((s) => s['id'] == _currentSessionId);
+      if (session['title'] == 'New Chat') {
+        final newTitle = text.length > 25 ? '${text.substring(0, 22)}...' : text;
+        await _dbService.updateSessionTitle(_currentSessionId!, newTitle);
+        await _refreshSessions();
+      }
+
+      final response = await _agentService.sendMessage(text, _currentSessionId!);
       if (mounted) {
         setState(() {
           _isTyping = false;
@@ -185,6 +249,7 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
         ),
       ),
+      drawer: _buildDrawer(),
       body: Column(
         children: [
           Expanded(
@@ -220,7 +285,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     ),
                     const SizedBox(width: 8),
                     Text(
-                      'Thinking...',
+                      _currentStatus.isNotEmpty ? _currentStatus : 'Thinking...',
                       style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 12),
                     ),
                   ],
@@ -228,6 +293,92 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
             ),
           _buildMessageComposer(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDrawer() {
+    return Drawer(
+      backgroundColor: const Color(0xFF0A0A0E),
+      child: Column(
+        children: [
+          DrawerHeader(
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
+                colors: [Color(0xFF8A2BE2), Color(0xFF4B0082)],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+            ),
+            child: Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(Icons.bolt_rounded, color: Color(0xFF00FFCC), size: 40),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Agent Sessions',
+                    style: GoogleFonts.outfit(
+                      color: Colors.white,
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          ListTile(
+            leading: const Icon(Icons.add_circle_outline_rounded, color: Color(0xFF00FFCC)),
+            title: const Text('New Chat', style: TextStyle(color: Colors.white)),
+            onTap: () {
+              Navigator.pop(context);
+              _createNewChat();
+            },
+          ),
+          const Divider(color: Colors.white10),
+          Expanded(
+            child: ListView.builder(
+              padding: EdgeInsets.zero,
+              itemCount: _sessions.length,
+              itemBuilder: (context, index) {
+                final session = _sessions[index];
+                final isSelected = session['id'] == _currentSessionId;
+                return ListTile(
+                  leading: Icon(
+                    Icons.chat_bubble_outline_rounded,
+                    color: isSelected ? const Color(0xFF00FFCC) : Colors.white38,
+                    size: 20,
+                  ),
+                  title: Text(
+                    session['title'],
+                    style: TextStyle(
+                      color: isSelected ? Colors.white : Colors.white70,
+                      fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  trailing: isSelected 
+                    ? const Icon(Icons.circle, color: Color(0xFF00FFCC), size: 8)
+                    : null,
+                  onTap: () => _switchSession(session['id'] as int),
+                );
+              },
+            ),
+          ),
+          const Divider(color: Colors.white10),
+          ListTile(
+            leading: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent),
+            title: const Text('Clear All History', style: TextStyle(color: Colors.redAccent)),
+            onTap: () async {
+              await _dbService.clearChatHistory();
+              await _createNewChat();
+              Navigator.pop(context);
+            },
+          ),
+          const SizedBox(height: 20),
         ],
       ),
     );

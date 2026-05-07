@@ -9,6 +9,7 @@ import 'app_service.dart';
 import 'utility_service.dart';
 import 'personal_service.dart';
 import 'package:intl/intl.dart';
+import 'dart:async';
 
 class AgentService {
   late OpenAIClient _client;
@@ -20,6 +21,9 @@ class AgentService {
   final AppService _appService = AppService();
   final UtilityService _utilityService = UtilityService();
   final PersonalService _personalService = PersonalService();
+  
+  final _statusController = StreamController<String>.broadcast();
+  Stream<String> get statusStream => _statusController.stream;
 
   Future<void> initialize() async {
     String? apiKey = dotenv.env['GROQ_API_KEY'];
@@ -40,14 +44,18 @@ class AgentService {
     );
 
     _messages.clear();
-    await _loadHistory();
+  }
+
+  Future<void> loadSession(int sessionId) async {
+    _messages.clear();
+    await _loadHistory(sessionId);
     if (_messages.isEmpty) {
       _addSystemInstruction();
     }
   }
 
-  Future<void> _loadHistory() async {
-    final history = await _dbService.getChatHistory();
+  Future<void> _loadHistory(int sessionId) async {
+    final history = await _dbService.getChatHistory(sessionId);
     for (var msg in history) {
       final role = msg['role'] as String;
       final content = msg['content'] as String;
@@ -76,9 +84,9 @@ class AgentService {
     );
   }
 
-  Future<String> sendMessage(String text) async {
+  Future<String> sendMessage(String text, int sessionId) async {
     _messages.add(ChatCompletionMessage.user(content: ChatCompletionUserMessageContent.string(text)));
-    await _dbService.saveMessage('user', text);
+    await _dbService.saveMessage('user', text, sessionId);
 
     int retryCount = 0;
     const int maxRetries = 3;
@@ -379,6 +387,7 @@ class AgentService {
                 toolCall.function.name,
                 toolCall.function.arguments,
               );
+              _statusController.add('Agent is ${toolCall.function.name.replaceAll('_', ' ')}...');
               _messages.add(ChatCompletionMessage.tool(
                 toolCallId: toolCall.id,
                 content: jsonEncode(result),
@@ -402,6 +411,8 @@ class AgentService {
           ));
         }
 
+        _statusController.add(''); // Clear status
+        await _dbService.saveMessage('assistant', message.content ?? '', sessionId);
         return message.content ?? 'No response';
       } catch (e) {
         if (e.toString().contains('503') || e.toString().contains('429')) {

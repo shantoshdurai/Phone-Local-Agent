@@ -19,7 +19,7 @@ class DatabaseService {
     String path = join(await getDatabasesPath(), 'agent_memory.db');
     return await openDatabase(
       path,
-      version: 3,
+      version: 4,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
     );
@@ -38,6 +38,16 @@ class DatabaseService {
           timestamp TEXT
         )
       ''');
+    }
+    if (oldVersion < 4) {
+      await db.execute('''
+        CREATE TABLE sessions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          title TEXT,
+          created_at TEXT
+        )
+      ''');
+      await db.execute('ALTER TABLE chat_history ADD COLUMN session_id INTEGER');
     }
   }
 
@@ -59,7 +69,16 @@ class DatabaseService {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         role TEXT,
         content TEXT,
-        timestamp TEXT
+        timestamp TEXT,
+        session_id INTEGER
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT,
+        created_at TEXT
       )
     ''');
 
@@ -97,23 +116,61 @@ class DatabaseService {
     await batch.commit(noResult: true);
   }
 
-  Future<void> saveMessage(String role, String content) async {
+  Future<void> saveMessage(String role, String content, int sessionId) async {
     final db = await database;
     await db.insert('chat_history', {
       'role': role,
       'content': content,
       'timestamp': DateTime.now().toIso8601String(),
+      'session_id': sessionId,
     });
   }
 
-  Future<List<Map<String, dynamic>>> getChatHistory() async {
+  Future<List<Map<String, dynamic>>> getChatHistory(int sessionId) async {
     final db = await database;
-    return await db.query('chat_history', orderBy: 'timestamp ASC');
+    return await db.query('chat_history', 
+      where: 'session_id = ?', 
+      whereArgs: [sessionId], 
+      orderBy: 'timestamp ASC'
+    );
   }
 
   Future<void> clearChatHistory() async {
     final db = await database;
     await db.delete('chat_history');
+    await db.delete('sessions');
+  }
+
+  // Session Management
+  Future<int> createSession(String title) async {
+    final db = await database;
+    // Check if we need to cleanup (limit to 5)
+    final sessions = await db.query('sessions', orderBy: 'created_at ASC');
+    if (sessions.length >= 5) {
+      final oldestId = sessions.first['id'] as int;
+      await deleteSession(oldestId);
+    }
+
+    return await db.insert('sessions', {
+      'title': title,
+      'created_at': DateTime.now().toIso8601String(),
+    });
+  }
+
+  Future<List<Map<String, dynamic>>> getSessions() async {
+    final db = await database;
+    return await db.query('sessions', orderBy: 'created_at DESC');
+  }
+
+  Future<void> deleteSession(int sessionId) async {
+    final db = await database;
+    await db.delete('sessions', where: 'id = ?', whereArgs: [sessionId]);
+    await db.delete('chat_history', where: 'session_id = ?', whereArgs: [sessionId]);
+  }
+
+  Future<void> updateSessionTitle(int sessionId, String title) async {
+    final db = await database;
+    await db.update('sessions', {'title': title}, where: 'id = ?', whereArgs: [sessionId]);
   }
 
   Future<List<Map<String, dynamic>>> searchFiles(String query) async {
