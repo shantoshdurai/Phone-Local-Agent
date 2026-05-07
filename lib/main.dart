@@ -6,6 +6,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'services/agent_service.dart';
 import 'screens/onboarding_screen.dart';
 import 'screens/api_setup_screen.dart';
+import 'package:flutter/services.dart';
+import 'services/database_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -50,9 +52,6 @@ class LocalAgentApp extends StatelessWidget {
     );
   }
 }
-
-import 'package:flutter/services.dart';
-import 'services/database_service.dart';
 
 class ChatMessage {
   final String text;
@@ -238,107 +237,146 @@ class _ChatScreenState extends State<ChatScreen> {
     final isError = message.text.startsWith('Error:');
     final isInvalidKey = message.text.contains('invalid_api_key') || message.text.contains('401');
 
-    return Align(
-      alignment: message.isUser ? Alignment.centerRight : Alignment.centerLeft,
-      child: GestureDetector(
-        onLongPress: () {
-          Clipboard.setData(ClipboardData(text: message.text));
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Copied to clipboard'),
-              duration: Duration(seconds: 1),
-            ),
-          );
-        },
-        child: Container(
-          margin: const EdgeInsets.only(bottom: 16.0),
-          padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
-          constraints: BoxConstraints(
-            maxWidth: MediaQuery.of(context).size.width * 0.75,
-          ),
-          decoration: BoxDecoration(
-            color: message.isUser 
-              ? Theme.of(context).colorScheme.primary.withValues(alpha: 0.8) 
-              : (isError ? Colors.red.withValues(alpha: 0.2) : Theme.of(context).colorScheme.surface),
-            border: isError ? Border.all(color: Colors.red.withValues(alpha: 0.5)) : null,
-            borderRadius: BorderRadius.only(
-              topLeft: const Radius.circular(20),
-              topRight: const Radius.circular(20),
-              bottomLeft: Radius.circular(message.isUser ? 20 : 0),
-              bottomRight: Radius.circular(message.isUser ? 0 : 20),
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: (message.isUser 
-                  ? Theme.of(context).colorScheme.primary 
-                  : Colors.black).withValues(alpha: 0.2),
-                blurRadius: 10,
-                offset: const Offset(0, 4),
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 20.0),
+      child: Row(
+        mainAxisAlignment: message.isUser ? MainAxisAlignment.end : MainAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (!message.isUser)
+            Container(
+              margin: const EdgeInsets.only(right: 8.0),
+              padding: const EdgeInsets.all(8.0),
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.1),
+                border: Border.all(color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.2)),
               ),
-            ],
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              message.isUser
-                  ? Text(
-                      message.text,
-                      style: const TextStyle(fontSize: 16),
-                    )
-                  : MarkdownBody(
-                      data: message.text,
-                      selectable: true,
-                      styleSheet: MarkdownStyleSheet(
-                        p: const TextStyle(fontSize: 16, color: Colors.white),
-                        code: TextStyle(
-                          backgroundColor: Colors.black.withValues(alpha: 0.5),
-                          fontFamily: 'monospace',
-                          fontSize: 14,
-                        ),
-                        codeblockDecoration: BoxDecoration(
-                          color: Colors.black.withValues(alpha: 0.5),
-                          borderRadius: BorderRadius.circular(8),
+              child: const Icon(Icons.smart_toy_rounded, size: 16, color: Color(0xFF00FFCC)),
+            ),
+          Flexible(
+            child: GestureDetector(
+              onLongPress: () {
+                Clipboard.setData(ClipboardData(text: message.text));
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Copied to clipboard'),
+                    duration: Duration(seconds: 1),
+                    behavior: SnackBarBehavior.floating,
+                  ),
+                );
+              },
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 18.0, vertical: 14.0),
+                decoration: BoxDecoration(
+                  gradient: message.isUser
+                      ? const LinearGradient(
+                          colors: [Color(0xFF8A2BE2), Color(0xFF4B0082)],
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                        )
+                      : null,
+                  color: message.isUser
+                      ? null
+                      : (isError ? Colors.red.withValues(alpha: 0.1) : const Color(0xFF1E1E24).withValues(alpha: 0.8)),
+                  borderRadius: BorderRadius.only(
+                    topLeft: const Radius.circular(24),
+                    topRight: const Radius.circular(24),
+                    bottomLeft: Radius.circular(message.isUser ? 24 : 4),
+                    bottomRight: Radius.circular(message.isUser ? 4 : 24),
+                  ),
+                  border: !message.isUser
+                      ? Border.all(color: Colors.white.withValues(alpha: 0.05), width: 1)
+                      : null,
+                  boxShadow: [
+                    BoxShadow(
+                      color: (message.isUser ? const Color(0xFF8A2BE2) : Colors.black).withValues(alpha: 0.2),
+                      blurRadius: 15,
+                      offset: const Offset(0, 6),
+                    ),
+                  ],
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    message.isUser
+                        ? Text(
+                            message.text,
+                            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w400, color: Colors.white),
+                          )
+                        : MarkdownBody(
+                            data: message.text,
+                            selectable: true,
+                            styleSheet: MarkdownStyleSheet(
+                              p: const TextStyle(fontSize: 15, color: Colors.white, height: 1.5),
+                              strong: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF00FFCC)),
+                              code: TextStyle(
+                                backgroundColor: Colors.black.withValues(alpha: 0.5),
+                                fontFamily: 'monospace',
+                                fontSize: 13,
+                                color: const Color(0xFF00FFCC),
+                              ),
+                              codeblockDecoration: BoxDecoration(
+                                color: Colors.black.withValues(alpha: 0.6),
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
+                              ),
+                              listBullet: const TextStyle(color: Color(0xFF00FFCC)),
+                            ),
+                          ),
+                    if (isError && isInvalidKey) ...[
+                      const SizedBox(height: 12),
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton.icon(
+                          onPressed: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(builder: (context) => const ApiSetupScreen()),
+                            );
+                          },
+                          icon: const Icon(Icons.vpn_key_rounded, size: 18),
+                          label: const Text('Update API Key'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.redAccent,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 8),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
                         ),
                       ),
-                    ),
-              if (isError && isInvalidKey) ...[
-                const SizedBox(height: 12),
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton.icon(
-                    onPressed: () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(builder: (context) => const ApiSetupScreen()),
-                      );
-                    },
-                    icon: const Icon(Icons.vpn_key_rounded, size: 18),
-                    label: const Text('Update API Key'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.redAccent,
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(vertical: 8),
-                    ),
-                  ),
+                    ],
+                  ],
                 ),
-              ],
-            ],
+              ),
+            ),
           ),
-        ),
+          if (message.isUser)
+            Container(
+              margin: const EdgeInsets.only(left: 8.0),
+              padding: const EdgeInsets.all(8.0),
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.1),
+                border: Border.all(color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.2)),
+              ),
+              child: const Icon(Icons.person_rounded, size: 16, color: Colors.white70),
+            ),
+        ],
       ),
     );
   }
 
   Widget _buildMessageComposer() {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
+      padding: const EdgeInsets.all(16.0),
       decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surface,
+        color: const Color(0xFF0A0A0E),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.2),
-            blurRadius: 10,
-            offset: const Offset(0, -2),
+            color: Colors.black.withOpacity(0.4),
+            blurRadius: 20,
+            offset: const Offset(0, -5),
           ),
         ],
       ),
@@ -346,26 +384,31 @@ class _ChatScreenState extends State<ChatScreen> {
         child: Row(
           children: [
             Expanded(
-              child: TextField(
-                controller: _textController,
-                textCapitalization: TextCapitalization.sentences,
-                onSubmitted: _handleSubmitted,
-                style: const TextStyle(color: Colors.white),
-                decoration: InputDecoration(
-                  hintText: 'Ask your local agent...',
-                  hintStyle: TextStyle(color: Colors.white.withValues(alpha: 0.5)),
-                  filled: true,
-                  fillColor: Colors.white.withValues(alpha: 0.05),
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 14.0),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(30.0),
-                    borderSide: BorderSide.none,
+              child: Container(
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1E1E24),
+                  borderRadius: BorderRadius.circular(28.0),
+                  border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
+                ),
+                child: TextField(
+                  controller: _textController,
+                  textCapitalization: TextCapitalization.sentences,
+                  onSubmitted: _handleSubmitted,
+                  style: const TextStyle(color: Colors.white, fontSize: 15),
+                  decoration: InputDecoration(
+                    hintText: 'Message Agent...',
+                    hintStyle: TextStyle(color: Colors.white.withValues(alpha: 0.3)),
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 14.0),
+                    border: InputBorder.none,
+                    prefixIcon: Icon(Icons.bolt_rounded, color: const Color(0xFF00FFCC).withValues(alpha: 0.5), size: 20),
                   ),
                 ),
               ),
             ),
-            const SizedBox(width: 8.0),
+            const SizedBox(width: 12.0),
             Container(
+              height: 50,
+              width: 50,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 gradient: const LinearGradient(
@@ -375,14 +418,14 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
                 boxShadow: [
                   BoxShadow(
-                    color: const Color(0xFF00FFCC).withValues(alpha: 0.4),
-                    blurRadius: 8,
-                    offset: const Offset(0, 2),
+                    color: const Color(0xFF8A2BE2).withValues(alpha: 0.4),
+                    blurRadius: 12,
+                    offset: const Offset(0, 4),
                   ),
                 ],
               ),
               child: IconButton(
-                icon: const Icon(Icons.send_rounded, color: Colors.white),
+                icon: const Icon(Icons.arrow_upward_rounded, color: Colors.white, size: 24),
                 onPressed: () => _handleSubmitted(_textController.text),
               ),
             ),
