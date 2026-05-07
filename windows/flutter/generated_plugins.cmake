@@ -6,6 +6,7 @@ list(APPEND FLUTTER_PLUGIN_LIST
   battery_plus
   connectivity_plus
   disk_space_2
+  file_selector_windows
   permission_handler_windows
   url_launcher_windows
 )

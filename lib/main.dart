@@ -8,6 +8,8 @@ import 'screens/onboarding_screen.dart';
 import 'screens/api_setup_screen.dart';
 import 'package:flutter/services.dart';
 import 'services/database_service.dart';
+import 'package:image_picker/image_picker.dart';
+import 'dart:io';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -52,8 +54,9 @@ class LocalAgentApp extends StatelessWidget {
 class ChatMessage {
   final String text;
   final bool isUser;
+  final String? imagePath;
 
-  ChatMessage({required this.text, required this.isUser});
+  ChatMessage({required this.text, required this.isUser, this.imagePath});
 }
 
 class ChatScreen extends StatefulWidget {
@@ -74,6 +77,8 @@ class _ChatScreenState extends State<ChatScreen> {
   String _currentStatus = '';
   int? _currentSessionId;
   List<Map<String, dynamic>> _sessions = [];
+  String? _selectedImagePath;
+  final ImagePicker _picker = ImagePicker();
 
   @override
   void initState() {
@@ -173,12 +178,27 @@ class _ChatScreenState extends State<ChatScreen> {
     Navigator.pop(context); // Close drawer
   }
 
+  Future<void> _pickImage() async {
+    final XFile? image = await _picker.pickImage(source: ImageSource.gallery);
+    if (image != null) {
+      setState(() {
+        _selectedImagePath = image.path;
+      });
+      _scrollToBottom();
+    }
+  }
+
   void _handleSubmitted(String text) async {
+    final imagePath = _selectedImagePath;
     _textController.clear();
-    if (text.trim().isEmpty) return;
+    setState(() {
+      _selectedImagePath = null;
+    });
+
+    if (text.trim().isEmpty && imagePath == null) return;
 
     setState(() {
-      _messages.add(ChatMessage(text: text, isUser: true));
+      _messages.add(ChatMessage(text: text, isUser: true, imagePath: imagePath));
       _isTyping = true;
     });
 
@@ -189,12 +209,13 @@ class _ChatScreenState extends State<ChatScreen> {
       // If session title is 'New Chat', update it with the first 20 chars of prompt
       final session = _sessions.firstWhere((s) => s['id'] == _currentSessionId);
       if (session['title'] == 'New Chat') {
-        final newTitle = text.length > 25 ? '${text.substring(0, 22)}...' : text;
+        final titleText = text.isEmpty ? "Image Query" : text;
+        final newTitle = titleText.length > 25 ? '${titleText.substring(0, 22)}...' : titleText;
         await _dbService.updateSessionTitle(_currentSessionId!, newTitle);
         await _refreshSessions();
       }
 
-      final response = await _agentService.sendMessage(text, _currentSessionId!);
+      final response = await _agentService.sendMessage(text, _currentSessionId!, imagePath: imagePath);
       if (mounted) {
         setState(() {
           _isTyping = false;
@@ -402,12 +423,27 @@ class _ChatScreenState extends State<ChatScreen> {
                   color: message.isUser ? const Color(0xFF2F2F2F) : Colors.transparent,
                   borderRadius: BorderRadius.circular(18),
                 ),
-                child: message.isUser
-                    ? Text(
-                        message.text,
-                        style: const TextStyle(fontSize: 16, color: Colors.white),
-                      )
-                    : MarkdownBody(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (message.imagePath != null)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 8.0),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(12),
+                          child: Image.file(
+                            File(message.imagePath!),
+                            width: 200,
+                            fit: BoxFit.cover,
+                          ),
+                        ),
+                      ),
+                    message.isUser
+                        ? Text(
+                            message.text,
+                            style: const TextStyle(fontSize: 16, color: Colors.white),
+                          )
+                        : MarkdownBody(
                         data: message.text,
                         selectable: true,
                         styleSheet: MarkdownStyleSheet(
@@ -433,40 +469,77 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Widget _buildMessageComposer() {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 20.0),
+      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 10.0),
       color: Colors.black,
       child: SafeArea(
-        child: Row(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            Expanded(
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF2F2F2F),
-                  borderRadius: BorderRadius.circular(30.0),
-                ),
-                child: TextField(
-                  controller: _textController,
-                  textCapitalization: TextCapitalization.sentences,
-                  onSubmitted: _handleSubmitted,
-                  onTap: () {
-                    // Give keyboard time to show
-                    Future.delayed(const Duration(milliseconds: 300), _scrollToBottom);
-                  },
-                  style: const TextStyle(color: Colors.white, fontSize: 16),
-                  decoration: InputDecoration(
-                    hintText: 'Message Agent...',
-                    hintStyle: TextStyle(color: Colors.white.withValues(alpha: 0.4)),
-                    border: InputBorder.none,
-                    contentPadding: const EdgeInsets.symmetric(vertical: 12),
-                  ),
+            if (_selectedImagePath != null)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8.0),
+                child: Row(
+                  children: [
+                    Stack(
+                      children: [
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(12),
+                          child: Image.file(
+                            File(_selectedImagePath!),
+                            height: 80,
+                            width: 80,
+                            fit: BoxFit.cover,
+                          ),
+                        ),
+                        Positioned(
+                          right: -5,
+                          top: -5,
+                          child: IconButton(
+                            icon: const Icon(Icons.cancel, color: Colors.white70, size: 20),
+                            onPressed: () => setState(() => _selectedImagePath = null),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
                 ),
               ),
-            ),
-            const SizedBox(width: 8.0),
-            IconButton(
-              icon: const Icon(Icons.arrow_upward_rounded, color: Colors.white, size: 28),
-              onPressed: () => _handleSubmitted(_textController.text),
+            Row(
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.add_photo_alternate_outlined, color: Colors.white60),
+                  onPressed: _pickImage,
+                ),
+                Expanded(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF171717),
+                      borderRadius: BorderRadius.circular(30.0),
+                    ),
+                    child: TextField(
+                      controller: _textController,
+                      textCapitalization: TextCapitalization.sentences,
+                      onSubmitted: _handleSubmitted,
+                      onTap: () {
+                        Future.delayed(const Duration(milliseconds: 300), _scrollToBottom);
+                      },
+                      style: const TextStyle(color: Colors.white, fontSize: 16),
+                      decoration: InputDecoration(
+                        hintText: 'Message Agent...',
+                        hintStyle: TextStyle(color: Colors.white.withValues(alpha: 0.4)),
+                        border: InputBorder.none,
+                        contentPadding: const EdgeInsets.symmetric(vertical: 12),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8.0),
+                IconButton(
+                  icon: const Icon(Icons.arrow_upward_rounded, color: Colors.white, size: 28),
+                  onPressed: () => _handleSubmitted(_textController.text),
+                ),
+              ],
             ),
           ],
         ),

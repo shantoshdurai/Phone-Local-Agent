@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:openai_dart/openai_dart.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
@@ -89,8 +90,24 @@ class AgentService {
     );
   }
 
-  Future<String> sendMessage(String text, int sessionId) async {
-    _messages.add(ChatCompletionMessage.user(content: ChatCompletionUserMessageContent.string(text)));
+  Future<String> sendMessage(String text, int sessionId, {String? imagePath}) async {
+    if (imagePath != null) {
+      final bytes = await File(imagePath).readAsBytes();
+      final base64Image = base64Encode(bytes);
+      _messages.add(ChatCompletionMessage.user(
+        content: ChatCompletionUserMessageContent.parts([
+          ChatCompletionMessageContentPart.text(text: text),
+          ChatCompletionMessageContentPart.imageUrl(
+            imageUrl: ChatCompletionImageUrl(
+              url: 'data:image/jpeg;base64,$base64Image',
+            ),
+          ),
+        ]),
+      ));
+    } else {
+      _messages.add(ChatCompletionMessage.user(content: ChatCompletionUserMessageContent.string(text)));
+    }
+    
     await _dbService.saveMessage('user', text, sessionId);
 
     int retryCount = 0;
@@ -406,7 +423,9 @@ class AgentService {
     while (retryCount < maxRetries) {
       try {
         final request = CreateChatCompletionRequest(
-          model: ChatCompletionModel.modelId('llama-3.3-70b-versatile'),
+          model: ChatCompletionModel.modelId(
+            imagePath != null ? 'llama-3.2-11b-vision-preview' : 'llama-3.3-70b-versatile'
+          ),
           messages: _messages,
           tools: tools,
           toolChoice: ChatCompletionToolChoiceOption.mode(ChatCompletionToolChoiceMode.auto),
@@ -440,7 +459,9 @@ class AgentService {
           _messages.addAll(toolOutputs);
 
           final nextRequest = CreateChatCompletionRequest(
-            model: ChatCompletionModel.modelId('llama-3.3-70b-versatile'),
+            model: ChatCompletionModel.modelId(
+              imagePath != null ? 'llama-3.2-11b-vision-preview' : 'llama-3.3-70b-versatile'
+            ),
             messages: _messages,
             tools: tools,
           );
