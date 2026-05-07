@@ -86,6 +86,18 @@ class _ChatScreenState extends State<ChatScreen> {
         });
       }
     });
+
+    // Handle keyboard visibility for auto-scroll
+    WidgetsBinding.instance.addObserver(_KeyboardObserver(onKeyboardVisible: () {
+      _scrollToBottom();
+    }));
+  }
+
+  @override
+  void dispose() {
+    _textController.dispose();
+    _scrollController.dispose();
+    super.dispose();
   }
 
   Future<void> _refreshSessions() async {
@@ -437,6 +449,10 @@ class _ChatScreenState extends State<ChatScreen> {
                   controller: _textController,
                   textCapitalization: TextCapitalization.sentences,
                   onSubmitted: _handleSubmitted,
+                  onTap: () {
+                    // Give keyboard time to show
+                    Future.delayed(const Duration(milliseconds: 300), _scrollToBottom);
+                  },
                   style: const TextStyle(color: Colors.white, fontSize: 16),
                   decoration: InputDecoration(
                     hintText: 'Message Agent...',
@@ -456,5 +472,15 @@ class _ChatScreenState extends State<ChatScreen> {
         ),
       ),
     );
+  }
+}
+
+class _KeyboardObserver extends WidgetsBindingObserver {
+  final VoidCallback onKeyboardVisible;
+  _KeyboardObserver({required this.onKeyboardVisible});
+
+  @override
+  void didChangeMetrics() {
+    onKeyboardVisible();
   }
 }
