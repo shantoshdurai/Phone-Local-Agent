@@ -7,6 +7,7 @@ import '../services/database_service.dart';
 import '../models/chat_message.dart';
 import '../widgets/message_bubble.dart';
 import '../widgets/suggestions_list.dart';
+import 'home_screen.dart';
 
 
 class ChatScreen extends StatefulWidget {
@@ -230,6 +231,7 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: Colors.black,
       appBar: AppBar(
         leading: Builder(
           builder: (context) => IconButton(
@@ -257,7 +259,7 @@ class _ChatScreenState extends State<ChatScreen> {
           IconButton(
             icon: const Icon(Icons.settings_outlined, size: 20, color: Colors.white70),
             onPressed: () {
-              Navigator.pop(context); // Go back to Home Screen model manager
+              Navigator.push(context, MaterialPageRoute(builder: (context) => const HomeScreen()));
             },
           ),
         ],

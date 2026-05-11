@@ -99,9 +99,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _startChat(String modelType) async {
     final fileName = modelType == '1.5B' ? _file15B : _file05B;
-    // We navigate to chat screen. 
-    // Chat screen will load the agent service with this model.
-    Navigator.push(context, MaterialPageRoute(builder: (context) => ChatScreen(modelFileName: fileName)));
+    Navigator.pushAndRemoveUntil(
+      context, 
+      MaterialPageRoute(builder: (context) => ChatScreen(modelFileName: fileName)),
+      (route) => false
+    );
   }
 
   Widget _buildPerformanceEstimate() {
@@ -214,6 +216,7 @@ class _HomeScreenState extends State<HomeScreen> {
         centerTitle: true,
       ),
       body: SingleChildScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.all(20),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,

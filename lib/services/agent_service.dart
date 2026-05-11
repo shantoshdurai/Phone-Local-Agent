@@ -147,25 +147,22 @@ If you don't need a tool, just answer the user normally.
       _tokenSubscription = Fllama.instance()?.onTokenStream?.listen((event) {
         if (event["contextId"].toString() == _contextId.toString()) {
           final token = event["token"]?.toString() ?? "";
-          if (token == "<|im_end|>" || token.contains("[DONE]")) {
-            if (!completer.isCompleted) {
-              completer.complete(fullResponse);
-            }
-          } else {
-            fullResponse += token;
-          }
+          // You could broadcast token to a UI stream here if needed
         }
       });
 
-      await Fllama.instance()?.completion(
+      final result = await Fllama.instance()?.completion(
         _contextId!,
         prompt: prompt,
         emitRealtimeCompletion: true,
         stop: ["<|im_end|>"],
       );
 
-
-      final responseText = await completer.future;
+      String responseText = result?["text"] ?? "";
+      if (responseText.isEmpty && result?["content"] != null) {
+        responseText = result?["content"];
+      }
+      
       _statusController.add('');
 
       // Check if the response contains a tool call block
