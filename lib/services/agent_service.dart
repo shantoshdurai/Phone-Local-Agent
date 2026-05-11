@@ -49,8 +49,8 @@ class AgentService {
   String? _activeApiKey;
   int _geminiModelIndex = 0;
   final List<String> _geminiModels = [
-    'gemini-1.5-pro',
     'gemini-1.5-flash',
+    'gemini-1.5-pro',
     'gemini-1.5-flash-8b',
   ];
   
@@ -62,10 +62,12 @@ class AgentService {
   }
   Future<void> initialize() async {
     final prefs = await SharedPreferences.getInstance();
-    String? geminiKey = dotenv.env['GEMINI_API_KEY'] ?? prefs.getString('gemini_api_key');
-    String? groqKey = dotenv.env['GROQ_API_KEY'] ?? prefs.getString('api_key');
+    String? uiKey = prefs.getString('api_key') ?? prefs.getString('gemini_api_key');
+    String? envGemini = dotenv.env['GEMINI_API_KEY'];
+    String? envGroq = dotenv.env['GROQ_API_KEY'];
     
-    String? apiKey = geminiKey ?? groqKey;
+    // UI Key takes highest precedence, then env Gemini, then env Groq
+    String? apiKey = uiKey ?? envGemini ?? envGroq;
 
     if (apiKey == null || apiKey.isEmpty) {
       throw Exception('API Key not found. Please set it in Settings or .env file.');
@@ -875,14 +877,16 @@ class AgentService {
         if (assistantText.contains('<thought>')) {
           assistantText = assistantText.split('</thought>').last.trim();
         }
-        if (assistantText.startsWith('The user is asking') || assistantText.contains('\nI should use the')) {
-          // Find the actual final answer or the last paragraph
+        
+        // Remove common reasoning patterns like "Thinking Process:", "1. ... 2. ...", etc.
+        assistantText = assistantText.replaceAll(RegExp(r'(?i)(thinking process:|internal monologue:|i need to:|the user wants|the user is asking)[\s\S]*?(?=\n\n|\Z)'), '').trim();
+        
+        if (assistantText.startsWith('I should use the') || assistantText.startsWith('I will now')) {
           final lines = assistantText.split('\n');
           if (lines.length > 1) {
-            assistantText = lines.last.trim();
-            if (assistantText.isEmpty && lines.length > 2) {
-              assistantText = lines[lines.length - 2].trim();
-            }
+            assistantText = lines.skip(1).join('\n').trim();
+          } else {
+            assistantText = 'Task processed successfully.';
           }
         }
 
