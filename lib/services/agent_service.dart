@@ -127,7 +127,10 @@ class AgentService {
           1. **Direct Action**: Never ask "Would you like me to...?" Just do it. If the user says "Uninstall WhatsApp," call the tool immediately.
           2. **Package Name Accuracy**: For app actions, if you aren't 100% sure of the `packageName`, call `list_apps` first. NEVER guess a package name.
           3. **Search Depth**: When searching for files, use broad queries. If "Project_Doc_v2.pdf" fails, try searching for "Project" or ".pdf".
-          4. **Web Search Diligence**: When searching the web (e.g., for APK downloads), carefully inspect the "links" and "result" fields in the tool output. If an official URL (like whatsapp.com) is present, use it for the `download_file` tool.
+          4. **Web Search Diligence**: When searching the web (e.g., for APK downloads), carefully inspect the "links" and "result" fields in the tool output. 
+             - For WhatsApp, try official URLs like `https://www.whatsapp.com/android/` or `https://www.whatsapp.com/download`.
+             - Reputable mirrors like `apkmirror.com` or `apkpure.com` are also acceptable.
+             - If you find a direct APK link, use the `download_file` tool immediately.
           5. **Hardware Authority**: When reporting specs (RAM, CPU), use the exact keys from `get_device_info`. NEVER use phrases like "depending on the variant" or "it seems".
           6. **Autonomous Recovery**: If a tool returns an error, look at the error message and try a different tool or a different argument. Be a problem solver.
           7. **Concise Reporting**: After successful tool use, give a brief, professional confirmation. "Flashlight toggled." is better than a long paragraph.
@@ -975,25 +978,33 @@ class AgentService {
             errorStr.contains('limit') || 
             errorStr.contains('not found')) {
           retryCount++;
-          _geminiModelIndex++;
-          final nextModel = _geminiModels[_geminiModelIndex % _geminiModels.length];
-          _statusController.add('Model unavailable. Retrying...');
+          if (_geminiModels.length > 1) {
+            _geminiModelIndex++;
+            final nextModel = _geminiModels[_geminiModelIndex % _geminiModels.length];
+            _statusController.add('Model unavailable. Switching...');
+            
+            _geminiModel = gemini.GenerativeModel(
+              model: nextModel,
+              apiKey: _activeApiKey!,
+              systemInstruction: gemini.Content.system(_getSystemPrompt()),
+              tools: [_getGeminiTools()],
+            );
+            _geminiChat = _geminiModel!.startChat();
+          } else {
+            _statusController.add('Service busy. Retrying in ${2 * retryCount}s...');
+          }
           
-          _geminiModel = gemini.GenerativeModel(
-            model: nextModel,
-            apiKey: _activeApiKey!,
-            systemInstruction: gemini.Content.system(_getSystemPrompt()),
-            tools: [_getGeminiTools()],
-          );
-          _geminiChat = _geminiModel!.startChat();
-          
-          await Future.delayed(Duration(seconds: 1 * retryCount));
+          await Future.delayed(Duration(seconds: 2 * retryCount));
           continue;
         }
-        return AgentResponse('Service Error: $e', 'error', retryCount);
+        final errorMsg = 'Service Error: $e';
+        await _dbService.saveMessage('assistant', errorMsg, sessionId);
+        return AgentResponse(errorMsg, 'error', retryCount);
       }
     }
-    return AgentResponse('🚨 AI Service is currently unavailable. Please try again later.', 'error', retryCount);
+    const finalError = '🚨 AI Service is currently unavailable. Please try again later.';
+    await _dbService.saveMessage('assistant', finalError, sessionId);
+    return AgentResponse(finalError, 'error', retryCount);
   }
 
   Future<Map<String, dynamic>> _executeTool(String name, String? argumentsJson) async {

@@ -116,7 +116,8 @@ class _ChatScreenState extends State<ChatScreen> {
 
     setState(() {
       _messages.clear();
-      _messages.add(ChatMessage(text: "Hello! I'm your local AI agent. I have loaded my tools. How can I help you today?", isUser: false));
+      const greeting = "Hello! I'm your local AI agent. I have loaded my tools. How can I help you today?";
+      _messages.add(ChatMessage(text: greeting, isUser: false));
 
       final shuffled = List<Map<String, dynamic>>.from(_allSuggestions)..shuffle();
       _currentSuggestions = shuffled.take(3).toList();
@@ -125,6 +126,9 @@ class _ChatScreenState extends State<ChatScreen> {
         _isInitializing = false;
       }
     });
+
+    // Save greeting to history if it's a new session
+    await _dbService.saveMessage('assistant', "Hello! I'm your local AI agent. I have loaded my tools. How can I help you today?", newId);
   }
 
   Future<void> _switchSession(int sessionId) async {
