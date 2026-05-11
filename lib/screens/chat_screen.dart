@@ -52,10 +52,13 @@ class _ChatScreenState extends State<ChatScreen> {
     {'text': 'Show my device public IP address', 'icon': Icons.public_rounded},
   ];
   List<Map<String, dynamic>> _currentSuggestions = [];
+  bool _is15BAvailable = false;
+  bool _is05BAvailable = false;
 
   @override
   void initState() {
     super.initState();
+    _checkModels();
     _initAgent();
     _agentService.statusStream.listen((status) {
       if (mounted) {
@@ -68,6 +71,18 @@ class _ChatScreenState extends State<ChatScreen> {
     WidgetsBinding.instance.addObserver(_KeyboardObserver(onKeyboardVisible: () {
       _scrollToBottom();
     }));
+  }
+
+  void _checkModels() async {
+    final downloader = ModelDownloaderService();
+    final b15 = await downloader.isModelDownloaded("qwen2.5-1.5b-instruct-q4_k_m.gguf");
+    final b05 = await downloader.isModelDownloaded("qwen2.5-0.5b-instruct-q4_k_m.gguf");
+    if (mounted) {
+      setState(() {
+        _is15BAvailable = b15;
+        _is05BAvailable = b05;
+      });
+    }
   }
 
   @override
@@ -239,14 +254,50 @@ class _ChatScreenState extends State<ChatScreen> {
             onPressed: () => Scaffold.of(context).openDrawer(),
           ),
         ),
-        title: Text(
-          'Agent',
-          style: GoogleFonts.outfit(
-            color: Colors.white,
-            fontSize: 18,
-            fontWeight: FontWeight.w600,
-            letterSpacing: -0.5,
+        title: PopupMenuButton<String>(
+          color: const Color(0xFF1E1E1E),
+          offset: const Offset(0, 40),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                widget.modelFileName.contains('1.5b') ? 'Qwen 1.5B' : 'Qwen 0.5B Lite',
+                style: GoogleFonts.outfit(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w600, letterSpacing: -0.5),
+              ),
+              const SizedBox(width: 4),
+              const Icon(Icons.keyboard_arrow_down_rounded, color: Colors.white54, size: 20),
+            ],
           ),
+          onSelected: (value) {
+            if (value != widget.modelFileName) {
+              Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => ChatScreen(modelFileName: value)));
+            }
+          },
+          itemBuilder: (context) => [
+            if (_is15BAvailable)
+              PopupMenuItem(
+                value: "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+                child: Row(
+                  children: [
+                    Icon(Icons.memory_rounded, color: widget.modelFileName.contains('1.5b') ? Colors.blueAccent : Colors.white70, size: 20),
+                    const SizedBox(width: 12),
+                    Text('Qwen 1.5B', style: TextStyle(color: widget.modelFileName.contains('1.5b') ? Colors.blueAccent : Colors.white, fontWeight: FontWeight.w500)),
+                  ],
+                ),
+              ),
+            if (_is05BAvailable)
+              PopupMenuItem(
+                value: "qwen2.5-0.5b-instruct-q4_k_m.gguf",
+                child: Row(
+                  children: [
+                    Icon(Icons.bolt_rounded, color: widget.modelFileName.contains('0.5b') ? Colors.blueAccent : Colors.white70, size: 20),
+                    const SizedBox(width: 12),
+                    Text('Qwen 0.5B Lite', style: TextStyle(color: widget.modelFileName.contains('0.5b') ? Colors.blueAccent : Colors.white, fontWeight: FontWeight.w500)),
+                  ],
+                ),
+              ),
+          ],
         ),
         centerTitle: true,
         elevation: 0,

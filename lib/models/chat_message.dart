@@ -4,6 +4,8 @@ class ChatMessage {
   final String? imagePath;
   final String? modelName;
   final int? retryCount;
+  final double? tps;
+  final double? evalTime;
 
   ChatMessage({
     required this.text,
@@ -11,5 +13,7 @@ class ChatMessage {
     this.imagePath,
     this.modelName,
     this.retryCount,
+    this.tps,
+    this.evalTime,
   });
 }

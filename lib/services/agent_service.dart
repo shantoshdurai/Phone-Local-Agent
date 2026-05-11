@@ -16,7 +16,9 @@ class AgentResponse {
   final String text;
   final String modelName;
   final int retryCount;
-  AgentResponse(this.text, this.modelName, this.retryCount);
+  final double? tps;
+  final double? evalTime;
+  AgentResponse(this.text, this.modelName, this.retryCount, {this.tps, this.evalTime});
 }
 
 class AgentService {
@@ -65,7 +67,19 @@ class AgentService {
       throw Exception('Failed to initialize model context');
     }
     
+    // Perform a quick 1-token warmup to evaluate the graph and prevent cold-start delays
+    _statusController.add('Warming up Model Engine...');
+    try {
+      await Fllama.instance()?.completion(
+        _contextId!,
+        prompt: "<|im_start|>system\nWarmup<|im_end|>\n<|im_start|>assistant\n",
+        emitRealtimeCompletion: false,
+        nPredict: 1,
+      );
+    } catch (_) {}
+    
     _messages.clear();
+    _statusController.add('');
   }
 
   Future<void> loadSession(int sessionId) async {
@@ -143,11 +157,16 @@ If you don't need a tool, just answer the user normally.
     String fullResponse = '';
 
     try {
+      final startTime = DateTime.now();
+      int tokenCount = 0;
+      
       _tokenSubscription?.cancel();
       _tokenSubscription = Fllama.instance()?.onTokenStream?.listen((event) {
         if (event["contextId"].toString() == _contextId.toString()) {
           final token = event["token"]?.toString() ?? "";
-          // You could broadcast token to a UI stream here if needed
+          if (token != "<|im_end|>" && !token.contains("[DONE]")) {
+            tokenCount++;
+          }
         }
       });
 
@@ -157,6 +176,12 @@ If you don't need a tool, just answer the user normally.
         emitRealtimeCompletion: true,
         stop: ["<|im_end|>"],
       );
+      
+      final evalTimeMs = DateTime.now().difference(startTime).inMilliseconds;
+      double tps = 0;
+      if (evalTimeMs > 0 && tokenCount > 0) {
+        tps = (tokenCount / (evalTimeMs / 1000.0));
+      }
 
       String responseText = result?["text"] ?? "";
       if (responseText.isEmpty && result?["content"] != null) {
@@ -184,14 +209,14 @@ If you don't need a tool, just answer the user normally.
           
           return await sendMessage("Analyze the tool output and provide the final response to the user.", sessionId);
         } catch (e) {
-          return AgentResponse("I tried to use a tool but formatted it incorrectly. Local inference glitch.", "Qwen 2.5 Local", 0);
+          return AgentResponse("I tried to use a tool but formatted it incorrectly. Local inference glitch.", "Qwen 2.5 Local", 0, tps: tps, evalTime: evalTimeMs / 1000.0);
         }
       }
 
       await _dbService.saveMessage('assistant', responseText.trim(), sessionId);
       _messages.add({"role": "assistant", "content": responseText.trim()});
       
-      return AgentResponse(responseText.trim(), "Qwen 2.5 Local", 0);
+      return AgentResponse(responseText.trim(), "Qwen 2.5 Local", 0, tps: tps, evalTime: evalTimeMs / 1000.0);
 
     } catch (e) {
       _statusController.add('');
