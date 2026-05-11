@@ -38,19 +38,20 @@ class AgentService {
   
   List<String> _textModels = [
     'llama-3.3-70b-versatile',
+    'gemma2-9b-it',
   ];
 
   List<String> _visionModels = [
     'llama-3.2-11b-vision-preview',
-    'llama-3.2-90b-vision-preview',
   ];
 
   bool _isGemini = false;
   String? _activeApiKey;
   int _geminiModelIndex = 0;
   final List<String> _geminiModels = [
-    'gemini-2.0-flash-exp',
+    'gemini-1.5-pro',
     'gemini-1.5-flash',
+    'gemini-1.5-flash-8b',
   ];
   
   final _statusController = StreamController<String>.broadcast();
@@ -868,7 +869,23 @@ class AgentService {
         }
 
         _statusController.add(''); // Clear status
-        final assistantText = message.content ?? '';
+        String assistantText = message.content ?? '';
+        
+        // Gemma/Llama Filter: Strip internal thinking/reasoning
+        if (assistantText.contains('<thought>')) {
+          assistantText = assistantText.split('</thought>').last.trim();
+        }
+        if (assistantText.startsWith('The user is asking') || assistantText.contains('\nI should use the')) {
+          // Find the actual final answer or the last paragraph
+          final lines = assistantText.split('\n');
+          if (lines.length > 1) {
+            assistantText = lines.last.trim();
+            if (assistantText.isEmpty && lines.length > 2) {
+              assistantText = lines[lines.length - 2].trim();
+            }
+          }
+        }
+
         await _dbService.saveMessage('assistant', assistantText, sessionId);
         final activeModel = imagePath != null 
               ? _visionModels[visionModelIndex % _visionModels.length]
@@ -953,7 +970,11 @@ class AgentService {
         String finalResponse = assistantText ?? 'I have processed your request.';
         
         // Filter out "Thinking/Reasoning" steps if they are present in the output
+        if (finalResponse.contains('<thought>')) {
+          finalResponse = finalResponse.split('</thought>').last.trim();
+        }
         if (finalResponse.contains('The user wants') || 
+            finalResponse.contains('The user is asking') ||
             finalResponse.contains('I should look through') ||
             finalResponse.contains('I will now provide')) {
           // Attempt to extract the actual answer after the reasoning
