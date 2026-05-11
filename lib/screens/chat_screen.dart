@@ -257,7 +257,7 @@ class _ChatScreenState extends State<ChatScreen> {
           IconButton(
             icon: const Icon(Icons.settings_outlined, size: 20, color: Colors.white70),
             onPressed: () {
-              Navigator.push(context, MaterialPageRoute(builder: (context) => const ApiSetupScreen()));
+              Navigator.pop(context); // Go back to Home Screen model manager
             },
           ),
         ],
