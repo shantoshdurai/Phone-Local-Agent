@@ -180,14 +180,22 @@ If you don't need a tool, just answer the user normally.
       );
       
       final evalTimeMs = DateTime.now().difference(startTime).inMilliseconds;
-      double tps = 0;
-      if (evalTimeMs > 0 && tokenCount > 0) {
-        tps = (tokenCount / (evalTimeMs / 1000.0));
-      }
-
+      
       String responseText = result?["text"] ?? "";
       if (responseText.isEmpty && result?["content"] != null) {
         responseText = result?["content"];
+      }
+
+      // Fallback token estimation if the stream was too fast or missed tokens
+      if (tokenCount == 0 && responseText.isNotEmpty) {
+        // Rough estimate: 1 token ~= 0.75 words -> tokens = words / 0.75
+        tokenCount = (responseText.split(RegExp(r'\s+')).length / 0.75).toInt();
+        if (tokenCount == 0) tokenCount = 1; 
+      }
+
+      double tps = 0;
+      if (evalTimeMs > 0 && tokenCount > 0) {
+        tps = (tokenCount / (evalTimeMs / 1000.0));
       }
       
       _statusController.add('');
