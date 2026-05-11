@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
@@ -32,6 +33,9 @@ class _ChatScreenState extends State<ChatScreen> {
   List<Map<String, dynamic>> _sessions = [];
   String? _selectedImagePath;
   final ImagePicker _picker = ImagePicker();
+  String _streamingText = '';        // live accumulating text
+  bool _isStreaming = false;         // showing the streaming bubble
+  StreamSubscription? _tokenSub;
 
   final List<Map<String, dynamic>> _allSuggestions = [
     {'text': 'Download the latest WhatsApp APK', 'icon': Icons.download_rounded},
@@ -69,6 +73,28 @@ class _ChatScreenState extends State<ChatScreen> {
       }
     });
 
+    _tokenSub = _agentService.tokenStream.listen((token) {
+      if (!mounted) return;
+      if (token == '\x00') {
+        // Start: show empty streaming bubble
+        setState(() {
+          _isStreaming = true;
+          _streamingText = '';
+        });
+      } else if (token == '\x01') {
+        // Done streaming, bubble will be replaced by the final ChatMessage
+        setState(() {
+          _isStreaming = false;
+          _streamingText = '';
+        });
+      } else {
+        setState(() {
+          _streamingText += token;
+        });
+        _scrollToBottom();
+      }
+    });
+
     WidgetsBinding.instance.addObserver(_KeyboardObserver(onKeyboardVisible: () {
       _scrollToBottom();
     }));
@@ -88,6 +114,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   void dispose() {
+    _tokenSub?.cancel();
     _textController.dispose();
     _scrollController.dispose();
     super.dispose();
@@ -355,14 +382,38 @@ class _ChatScreenState extends State<ChatScreen> {
                     ],
                   ),
           ),
-          if (_isTyping)
+          // Real-time streaming bubble
+          if (_isStreaming && _streamingText.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Padding(
+                    padding: EdgeInsets.only(right: 12.0, top: 4),
+                    child: Icon(Icons.auto_awesome_rounded, size: 20, color: Colors.white),
+                  ),
+                  Flexible(
+                    child: AnimatedSize(
+                      duration: const Duration(milliseconds: 80),
+                      alignment: Alignment.topLeft,
+                      child: Text(
+                        _streamingText,
+                        style: GoogleFonts.outfit(fontSize: 17, color: Colors.white, height: 1.5),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            )
+          else if (_isTyping && !_isStreaming)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
               child: Row(
                 children: [
                   const SizedBox(width: 8, height: 8, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white54)),
                   const SizedBox(width: 12),
-                  Text(_currentStatus.isEmpty ? "Agent is thinking..." : _currentStatus,
+                  Text(_currentStatus.isEmpty ? "Thinking..." : _currentStatus,
                       style: const TextStyle(color: Colors.white54, fontSize: 12)),
                 ],
               ),

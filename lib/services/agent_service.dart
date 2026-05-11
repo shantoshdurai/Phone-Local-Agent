@@ -37,6 +37,9 @@ class AgentService {
   final _statusController = StreamController<String>.broadcast();
   Stream<String> get statusStream => _statusController.stream;
 
+  final _tokenStreamController = StreamController<String>.broadcast();
+  Stream<String> get tokenStream => _tokenStreamController.stream;
+
   String? _modelPath;
   double? _contextId;
   final List<Map<String, String>> _messages = [];
@@ -107,35 +110,30 @@ class AgentService {
   }
 
   String _getSystemPrompt() {
-    return '''You are a highly capable, offline, local AI agent running directly on the user's Android phone.
-You are powered by Qwen 2.5 and have access to various local device tools.
-Because you are running completely offline, you ensure total privacy and security.
+    return '''You are a concise, offline AI agent on the user's Android phone. You have tools for device control.
 
-### 🛠 TOOL MASTERY RULES
-If the user asks you to perform an action, you must use a tool.
-To use a tool, output exactly a JSON block. Use Markdown code blocks if possible, but raw JSON is also accepted.
+RULES:
+- Be SHORT and DIRECT. No padding, no fluff, no restating what you were told.
+- If the user asks a simple question, answer in 1-2 sentences max.
+- After a tool returns data, extract only the EXACT info the user asked for in one short sentence.
+- Do NOT explain what the tool is or what it does.
 
-Example for opening Instagram:
+TOOL USAGE: Output a raw JSON block to call a tool. Only output JSON, nothing else.
+
+Example to open Instagram:
 ```json
-{
-  "tool_name": "launch_app",
-  "arguments": {
-    "packageName": "com.instagram.android"
-  }
-}
+{"tool_name":"launch_app","arguments":{"packageName":"com.instagram.android"}}
 ```
 
-Available Tools:
-1. get_device_info: Returns battery, storage, RAM. Args: none.
-2. list_files: Lists files in a directory. Args: {"path": "optional/path", "extension": "optional .pdf"}.
-3. toggle_flashlight: Args: {"on": true/false}.
-4. list_apps: Lists installed apps. Args: none.
-5. launch_app: Launches an app by package ID. Args: {"packageName": "com.example.app"}.
-6. search_play_store: Searches the Play Store. Args: {"query": "app name"}.
-7. get_recent_screenshots: Returns recent screenshots. Args: none.
-8. get_public_ip: Returns the device public IP address. Args: none.
-
-If you don't need a tool, just answer the user normally.
+Tools:
+1. get_device_info - battery, storage, RAM. Args: none
+2. list_files - Args: {"path":"optional","extension":"optional .ext"}
+3. toggle_flashlight - Args: {"on":true/false}
+4. list_apps - installed apps. Args: none
+5. launch_app - Args: {"packageName":"com.example.app"}
+6. search_play_store - Args: {"query":"app name"}
+7. get_recent_screenshots - Args: none
+8. get_public_ip - Args: none
 ''';
   }
 
@@ -151,94 +149,95 @@ If you don't need a tool, just answer the user normally.
   Future<AgentResponse> sendMessage(String text, int sessionId, {String? imagePath, double? previousTps, double? previousEvalTime}) async {
     if (_contextId == null) throw Exception('Model not initialized');
     
-    _statusController.add('Thinking (Local)...');
+    _statusController.add('Thinking...');
     _messages.add({"role": "user", "content": text});
     
     final prompt = _buildChatMLPrompt();
-    final completer = Completer<String>();
     String fullResponse = '';
+    final startTime = DateTime.now();
+    int tokenCount = 0;
 
     try {
-      final startTime = DateTime.now();
-      int tokenCount = 0;
-      
+      // Signal UI to show empty streaming bubble
+      _tokenStreamController.add('\x00'); // sentinel = start new streaming message
+
       _tokenSubscription?.cancel();
       _tokenSubscription = Fllama.instance()?.onTokenStream?.listen((event) {
         if (event["contextId"].toString() == _contextId.toString()) {
           final token = event["token"]?.toString() ?? "";
-          if (token != "<|im_end|>" && !token.contains("[DONE]")) {
-            tokenCount++;
-          }
+          if (token == "<|im_end|>" || token.contains("[DONE]")) return;
+          fullResponse += token;
+          tokenCount++;
+          _tokenStreamController.add(token); // send each token to UI
         }
       });
 
-      final result = await Fllama.instance()?.completion(
+      await Fllama.instance()?.completion(
         _contextId!,
         prompt: prompt,
         emitRealtimeCompletion: true,
         stop: ["<|im_end|>"],
+        temperature: 0.5,
       );
-      
+
+      // Give a short delay for final tokens to flush
+      await Future.delayed(const Duration(milliseconds: 150));
+
       final evalTimeMs = DateTime.now().difference(startTime).inMilliseconds;
-      
-      String responseText = result?["text"] ?? "";
-      if (responseText.isEmpty && result?["content"] != null) {
-        responseText = result?["content"];
+
+      // Fallback token estimation if stream missed tokens
+      if (tokenCount == 0 && fullResponse.isNotEmpty) {
+        tokenCount = (fullResponse.split(RegExp(r'\s+')).length / 0.75).toInt().clamp(1, 99999);
       }
 
-      // Fallback token estimation if the stream was too fast or missed tokens
-      if (tokenCount == 0 && responseText.isNotEmpty) {
-        // Rough estimate: 1 token ~= 0.75 words -> tokens = words / 0.75
-        tokenCount = (responseText.split(RegExp(r'\s+')).length / 0.75).toInt();
-        if (tokenCount == 0) tokenCount = 1; 
-      }
+      double tps = evalTimeMs > 0 && tokenCount > 0 ? tokenCount / (evalTimeMs / 1000.0) : 0;
 
-      double tps = 0;
-      if (evalTimeMs > 0 && tokenCount > 0) {
-        tps = (tokenCount / (evalTimeMs / 1000.0));
-      }
-      
       _statusController.add('');
+      _tokenStreamController.add('\x01'); // sentinel = done streaming
 
       // Tool Detection: Markdown block or Raw JSON
       String? jsonStr;
-      final toolBlockMatch = RegExp(r'```json\n(.*?)\n```', dotAll: true).firstMatch(responseText);
+      final trimmed = fullResponse.trim();
+      final toolBlockMatch = RegExp(r'```json\n?(.*?)\n?```', dotAll: true).firstMatch(trimmed);
       if (toolBlockMatch != null) {
-        jsonStr = toolBlockMatch.group(1)!;
-      } else if (responseText.trim().startsWith('{') && responseText.trim().endsWith('}')) {
-        jsonStr = responseText.trim();
+        jsonStr = toolBlockMatch.group(1)!.trim();
+      } else if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+        jsonStr = trimmed;
       }
-      
+
       if (jsonStr != null) {
         try {
           final toolCall = jsonDecode(jsonStr);
-          final toolName = toolCall['tool_name'];
+          final toolName = toolCall['tool_name'] as String;
           final toolArgs = toolCall['arguments'] ?? {};
-          
-          _statusController.add('Executing $toolName...');
+
+          _statusController.add('Running $toolName...');
           final toolResult = await _executeTool(toolName, jsonEncode(toolArgs));
-          
-          _statusController.add('Analyzing results...');
-          _messages.add({"role": "assistant", "content": responseText});
-          _messages.add({"role": "system", "content": "Tool Output: ${jsonEncode(toolResult)}"});
-          
-          return await sendMessage("Analyze the tool output and provide the final response to the user.", sessionId,
-            previousTps: tps, previousEvalTime: evalTimeMs / 1000.0);
+
+          _messages.add({"role": "assistant", "content": trimmed});
+          _messages.add({"role": "system", "content": "Tool result: ${jsonEncode(toolResult)}"});
+
+          // Direct, short answer instruction
+          return await sendMessage(
+            "Answer the user's original request in ONE short sentence using only the relevant data from the tool result. No preamble.",
+            sessionId,
+            previousTps: previousTps ?? tps,
+            previousEvalTime: previousEvalTime ?? (evalTimeMs / 1000.0),
+          );
         } catch (e) {
-          return AgentResponse("I tried to use a tool but formatted it incorrectly. Local inference glitch.", "Qwen 2.5 Local", 0, 
-            tps: previousTps ?? tps, evalTime: previousEvalTime ?? (evalTimeMs / 1000.0));
+          return AgentResponse("Tool error: $e", "Qwen 2.5", 0, tps: previousTps ?? tps, evalTime: previousEvalTime ?? (evalTimeMs / 1000.0));
         }
       }
 
-      await _dbService.saveMessage('assistant', responseText.trim(), sessionId);
-      _messages.add({"role": "assistant", "content": responseText.trim()});
-      
-      return AgentResponse(responseText.trim(), "Qwen 2.5 Local", 0, 
+      await _dbService.saveMessage('assistant', fullResponse.trim(), sessionId);
+      _messages.add({"role": "assistant", "content": fullResponse.trim()});
+
+      return AgentResponse(fullResponse.trim(), "Qwen 2.5", 0,
         tps: previousTps ?? tps, evalTime: previousEvalTime ?? (evalTimeMs / 1000.0));
 
     } catch (e) {
       _statusController.add('');
-      return AgentResponse('Local Model Error: $e', 'error', 0);
+      return AgentResponse('Error: $e', 'error', 0);
     }
   }
 
