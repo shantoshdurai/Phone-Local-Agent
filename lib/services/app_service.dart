@@ -6,7 +6,7 @@ class AppService {
   Future<List<Map<String, dynamic>>> getInstalledApps() async {
     try {
       List<AppInfo> apps = await InstalledApps.getInstalledApps(
-        excludeSystemApps: true,
+        excludeSystemApps: false,
         withIcon: false,
       );
       
@@ -52,6 +52,37 @@ class AppService {
       }
     } catch (e) {
       print('Error opening play store for $packageName: $e');
+      return false;
+    }
+  }
+
+  Future<bool> openPlayStoreUpdates() async {
+    final Uri updatesUrl = Uri.parse('https://play.google.com/store/apps/details?id=com.android.vending');
+    
+    try {
+      final Uri intentUrl = Uri.parse('market://my_apps');
+      if (await canLaunchUrl(intentUrl)) {
+        return await launchUrl(intentUrl);
+      }
+      return await launchUrl(updatesUrl, mode: LaunchMode.externalApplication);
+    } catch (e) {
+      print('Error opening play store updates: $e');
+      return false;
+    }
+  }
+
+  Future<bool> searchPlayStore(String query) async {
+    final Uri url = Uri.parse('market://search?q=${Uri.encodeComponent(query)}&c=apps');
+    final Uri webUrl = Uri.parse('https://play.google.com/store/search?q=${Uri.encodeComponent(query)}&c=apps');
+    
+    try {
+      if (await canLaunchUrl(url)) {
+        return await launchUrl(url);
+      } else {
+        return await launchUrl(webUrl, mode: LaunchMode.externalApplication);
+      }
+    } catch (e) {
+      print('Error searching play store for $query: $e');
       return false;
     }
   }

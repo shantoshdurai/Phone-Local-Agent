@@ -1,0 +1,516 @@
+import 'dart:io';
+import 'package:flutter/material.dart';
+import 'package:google_fonts/google_fonts.dart';
+import 'package:image_picker/image_picker.dart';
+import '../services/agent_service.dart';
+import '../services/database_service.dart';
+import '../models/chat_message.dart';
+import '../widgets/message_bubble.dart';
+import '../widgets/suggestions_list.dart';
+import 'api_setup_screen.dart';
+
+class ChatScreen extends StatefulWidget {
+  const ChatScreen({super.key});
+
+  @override
+  State<ChatScreen> createState() => _ChatScreenState();
+}
+
+class _ChatScreenState extends State<ChatScreen> {
+  final List<ChatMessage> _messages = [];
+  final TextEditingController _textController = TextEditingController();
+  final ScrollController _scrollController = ScrollController();
+  final AgentService _agentService = AgentService();
+  final DatabaseService _dbService = DatabaseService();
+  bool _isTyping = false;
+  bool _isInitializing = true;
+  String _currentStatus = '';
+  int? _currentSessionId;
+  List<Map<String, dynamic>> _sessions = [];
+  String? _selectedImagePath;
+  final ImagePicker _picker = ImagePicker();
+
+  final List<Map<String, dynamic>> _allSuggestions = [
+    {'text': 'Download the latest WhatsApp APK', 'icon': Icons.download_rounded},
+    {'text': 'Tell me my device info & battery', 'icon': Icons.battery_charging_full_rounded},
+    {'text': 'Search for my PDF documents', 'icon': Icons.description_rounded},
+    {'text': 'Toggle my device flashlight', 'icon': Icons.flashlight_on_rounded},
+    {'text': 'Show me my recent screenshots', 'icon': Icons.image_search_rounded},
+    {'text': 'Vibrate my phone for 1 second', 'icon': Icons.vibration_rounded},
+    {'text': 'Copy current time to clipboard', 'icon': Icons.content_copy_rounded},
+    {'text': 'Check my network connectivity', 'icon': Icons.network_check_rounded},
+    {'text': 'List all installed applications', 'icon': Icons.apps_rounded},
+    {'text': 'Read the last text I copied', 'icon': Icons.assignment_rounded},
+    {'text': 'Set volume level to 50%', 'icon': Icons.volume_up_rounded},
+    {'text': 'Find all APK files on my device', 'icon': Icons.folder_zip_rounded},
+    {'text': 'Open Play Store for Instagram', 'icon': Icons.shop_rounded},
+    {'text': 'Check my available storage space', 'icon': Icons.storage_rounded},
+    {'text': 'What was the last file I modified?', 'icon': Icons.history_edu_rounded},
+    {'text': 'Launch the Calculator app', 'icon': Icons.calculate_rounded},
+    {'text': 'Show my device public IP address', 'icon': Icons.public_rounded},
+  ];
+  List<Map<String, dynamic>> _currentSuggestions = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _initAgent();
+    _agentService.statusStream.listen((status) {
+      if (mounted) {
+        setState(() {
+          _currentStatus = status;
+        });
+      }
+    });
+
+    WidgetsBinding.instance.addObserver(_KeyboardObserver(onKeyboardVisible: () {
+      _scrollToBottom();
+    }));
+  }
+
+  @override
+  void dispose() {
+    _textController.dispose();
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _refreshSessions() async {
+    final sessions = await _dbService.getSessions();
+    if (mounted) {
+      setState(() {
+        _sessions = sessions;
+      });
+    }
+  }
+
+  Future<void> _initAgent() async {
+    try {
+      await _agentService.initialize();
+      final sessions = await _dbService.getSessions();
+
+      await _createNewChat(isInitial: true);
+      if (sessions.isNotEmpty) {
+        setState(() {
+          _sessions = sessions;
+          _isInitializing = false;
+        });
+      } else {
+        setState(() {
+          _isInitializing = false;
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _messages.add(ChatMessage(text: "Failed to initialize agent: $e", isUser: false));
+        _isInitializing = false;
+      });
+    }
+  }
+
+  Future<void> _createNewChat({bool isInitial = false}) async {
+    final newId = await _dbService.createSession('New Chat');
+    _currentSessionId = newId;
+    await _agentService.loadSession(newId);
+    await _refreshSessions();
+
+    setState(() {
+      _messages.clear();
+      _messages.add(ChatMessage(text: "Hello! I'm your local AI agent. I have loaded my tools. How can I help you today?", isUser: false));
+
+      final shuffled = List<Map<String, dynamic>>.from(_allSuggestions)..shuffle();
+      _currentSuggestions = shuffled.take(3).toList();
+
+      if (!isInitial) {
+        _isInitializing = false;
+      }
+    });
+  }
+
+  Future<void> _switchSession(int sessionId) async {
+    _currentSessionId = sessionId;
+    await _agentService.loadSession(sessionId);
+    final history = await _dbService.getChatHistory(sessionId);
+
+    setState(() {
+      _messages.clear();
+      for (var msg in history) {
+        _messages.add(ChatMessage(
+          text: msg['content'] as String,
+          isUser: (msg['role'] as String) == 'user',
+        ));
+      }
+    });
+    _scrollToBottom();
+    Navigator.pop(context);
+  }
+
+  Future<void> _pickImage() async {
+    final XFile? image = await _picker.pickImage(source: ImageSource.gallery);
+    if (image != null) {
+      setState(() {
+        _selectedImagePath = image.path;
+      });
+      _scrollToBottom();
+    }
+  }
+
+  void _handleSubmitted(String text) async {
+    final imagePath = _selectedImagePath;
+    _textController.clear();
+    setState(() {
+      _selectedImagePath = null;
+    });
+
+    if (text.trim().isEmpty && imagePath == null) return;
+
+    setState(() {
+      _messages.add(ChatMessage(text: text, isUser: true, imagePath: imagePath));
+      _isTyping = true;
+    });
+
+    // Save user message to database
+    await _dbService.saveMessage('user', text, _currentSessionId!);
+
+    _scrollToBottom();
+
+    try {
+      final session = _sessions.cast<Map<String, dynamic>?>().firstWhere(
+        (s) => s?['id'] == _currentSessionId,
+        orElse: () => null,
+      );
+      if (session != null && session['title'] == 'New Chat') {
+        final titleText = text.isEmpty ? "Image Query" : text;
+        final newTitle = titleText.length > 25 ? '${titleText.substring(0, 22)}...' : titleText;
+        await _dbService.updateSessionTitle(_currentSessionId!, newTitle);
+        await _refreshSessions();
+      }
+
+      final response = await _agentService.sendMessage(text, _currentSessionId!, imagePath: imagePath);
+      if (mounted) {
+        setState(() {
+          _isTyping = false;
+          _messages.add(ChatMessage(
+            text: response.text, 
+            isUser: false,
+            modelName: response.modelName,
+            retryCount: response.retryCount,
+          ));
+        });
+        _scrollToBottom();
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _isTyping = false;
+          _messages.add(ChatMessage(text: "Error: $e", isUser: false));
+        });
+        _scrollToBottom();
+      }
+    }
+  }
+
+  void _scrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scrollController.hasClients) {
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        leading: Builder(
+          builder: (context) => IconButton(
+            icon: const Icon(Icons.menu_rounded, color: Colors.white70),
+            onPressed: () => Scaffold.of(context).openDrawer(),
+          ),
+        ),
+        title: Text(
+          'Agent',
+          style: GoogleFonts.outfit(
+            color: Colors.white,
+            fontSize: 18,
+            fontWeight: FontWeight.w600,
+            letterSpacing: -0.5,
+          ),
+        ),
+        centerTitle: true,
+        elevation: 0,
+        backgroundColor: Colors.black,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.history_rounded, size: 20, color: Colors.white70),
+            onPressed: () => _createNewChat(),
+          ),
+          IconButton(
+            icon: const Icon(Icons.settings_outlined, size: 20, color: Colors.white70),
+            onPressed: () {
+              Navigator.push(context, MaterialPageRoute(builder: (context) => const ApiSetupScreen()));
+            },
+          ),
+        ],
+      ),
+      drawer: _buildDrawer(),
+      body: Column(
+        children: [
+          Expanded(
+            child: _isInitializing
+                ? const Center(child: CircularProgressIndicator(color: Colors.white))
+                : Column(
+                    children: [
+                      Expanded(
+                        child: ListView.builder(
+                          controller: _scrollController,
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                          itemCount: _messages.length,
+                          itemBuilder: (context, index) => MessageBubble(message: _messages[index]),
+                        ),
+                      ),
+                      if (_messages.length <= 1 && !_isTyping)
+                        ValueListenableBuilder<TextEditingValue>(
+                          valueListenable: _textController,
+                          builder: (context, value, child) {
+                            final bool showSuggestions = value.text.isEmpty;
+                            return AnimatedOpacity(
+                              duration: const Duration(milliseconds: 250),
+                              opacity: showSuggestions ? 1.0 : 0.0,
+                              child: IgnorePointer(
+                                ignoring: !showSuggestions,
+                                child: SuggestionsList(
+                                  suggestions: _currentSuggestions,
+                                  onSuggestionTap: _handleSubmitted,
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                    ],
+                  ),
+          ),
+          if (_isTyping)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+              child: Row(
+                children: [
+                  const SizedBox(width: 8, height: 8, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white54)),
+                  const SizedBox(width: 12),
+                  Text(_currentStatus.isEmpty ? "Agent is thinking..." : _currentStatus,
+                      style: const TextStyle(color: Colors.white54, fontSize: 12)),
+                ],
+              ),
+            ),
+          _buildMessageComposer(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDrawer() {
+    return Drawer(
+      backgroundColor: Colors.black,
+      child: Column(
+        children: [
+          const SizedBox(height: 60),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16.0),
+            child: Row(
+              children: [
+                const Icon(Icons.auto_awesome_rounded, color: Colors.white, size: 24),
+                const SizedBox(width: 12),
+                Text('Local Agent', style: GoogleFonts.outfit(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w600)),
+              ],
+            ),
+          ),
+          const SizedBox(height: 30),
+          ListTile(
+            leading: const Icon(Icons.add_rounded, color: Colors.white70),
+            title: const Text('New Chat', style: TextStyle(color: Colors.white70)),
+            onTap: () {
+              Navigator.pop(context);
+              _createNewChat();
+            },
+          ),
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+            child: Text('Recent', style: TextStyle(color: Colors.white38, fontSize: 12, fontWeight: FontWeight.bold)),
+          ),
+          Expanded(
+            child: ListView.builder(
+              padding: EdgeInsets.zero,
+              itemCount: _sessions.length,
+              itemBuilder: (context, index) {
+                final session = _sessions[index];
+                final isSelected = session['id'] == _currentSessionId;
+                return ListTile(
+                  title: Text(session['title'], style: TextStyle(color: isSelected ? Colors.white : Colors.white60, fontSize: 14), maxLines: 1, overflow: TextOverflow.ellipsis),
+                  onTap: () => _switchSession(session['id'] as int),
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 24),
+                );
+              },
+            ),
+          ),
+          const Divider(color: Colors.white10),
+          ListTile(
+            leading: const Icon(Icons.delete_outline_rounded, color: Colors.white38),
+            title: const Text('Clear History', style: TextStyle(color: Colors.white38, fontSize: 13)),
+            onTap: () async {
+              await _dbService.clearChatHistory();
+              await _createNewChat();
+              Navigator.pop(context);
+            },
+          ),
+          const SizedBox(height: 20),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMessageComposer() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 12.0),
+      color: Colors.black,
+      child: SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (_selectedImagePath != null)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 12.0),
+                child: Row(
+                  children: [
+                    Stack(
+                      clipBehavior: Clip.none,
+                      children: [
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(14),
+                          child: Image.file(
+                            File(_selectedImagePath!),
+                            height: 70,
+                            width: 70,
+                            fit: BoxFit.cover,
+                          ),
+                        ),
+                        Positioned(
+                          right: -8,
+                          top: -8,
+                          child: GestureDetector(
+                            onTap: () => setState(() => _selectedImagePath = null),
+                            child: Container(
+                              padding: const EdgeInsets.all(2),
+                              decoration: const BoxDecoration(
+                                color: Colors.white,
+                                shape: BoxShape.circle,
+                              ),
+                              child: const Icon(Icons.close_rounded, color: Colors.black, size: 14),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            Row(
+              children: [
+                Expanded(
+                  child: Container(
+                    height: 52,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF242424),
+                      borderRadius: BorderRadius.circular(26.0),
+                    ),
+                    child: Row(
+                      children: [
+                        IconButton(
+                          icon: const Icon(Icons.add_rounded, color: Colors.white, size: 24),
+                          onPressed: _pickImage,
+                        ),
+                        Expanded(
+                          child: TextField(
+                            controller: _textController,
+                            textCapitalization: TextCapitalization.sentences,
+                            onSubmitted: _handleSubmitted,
+                            onTap: () => Future.delayed(const Duration(milliseconds: 300), _scrollToBottom),
+                            style: GoogleFonts.outfit(color: Colors.white, fontSize: 17),
+                            decoration: InputDecoration(
+                              hintText: 'Ask Agent...',
+                              hintStyle: GoogleFonts.outfit(color: Colors.white.withValues(alpha: 0.4)),
+                              border: InputBorder.none,
+                              contentPadding: const EdgeInsets.symmetric(vertical: 12),
+                            ),
+                          ),
+                        ),
+                        const Icon(Icons.mic_none_rounded, color: Colors.white70, size: 22),
+                        const SizedBox(width: 16),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                ValueListenableBuilder<TextEditingValue>(
+                  valueListenable: _textController,
+                  builder: (context, value, child) {
+                    final bool hasText = value.text.trim().isNotEmpty || _selectedImagePath != null;
+                    final Widget icon;
+                    final Color iconBg;
+
+                    if (_isTyping) {
+                      icon = const Icon(Icons.stop_rounded, color: Colors.white, size: 24);
+                      iconBg = Colors.red.withValues(alpha: 0.8);
+                    } else if (hasText) {
+                      icon = const Icon(Icons.arrow_upward_rounded, color: Colors.black, size: 24);
+                      iconBg = Colors.white;
+                    } else {
+                      icon = const Icon(Icons.graphic_eq_rounded, color: Colors.black, size: 20);
+                      iconBg = Colors.white;
+                    }
+
+                    return GestureDetector(
+                      onTap: () {
+                        if (_isTyping) {
+                          setState(() => _isTyping = false);
+                        } else {
+                          _handleSubmitted(_textController.text);
+                        }
+                      },
+                      child: AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 300),
+                        transitionBuilder: (Widget child, Animation<double> animation) {
+                          return ScaleTransition(scale: animation, child: child);
+                        },
+                        child: Container(
+                          key: ValueKey<int>(_isTyping ? 0 : (hasText ? 1 : 2)),
+                          height: 48,
+                          width: 48,
+                          decoration: BoxDecoration(
+                            color: iconBg,
+                            shape: BoxShape.circle,
+                          ),
+                          child: icon,
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _KeyboardObserver extends WidgetsBindingObserver {
+  final VoidCallback onKeyboardVisible;
+  _KeyboardObserver({required this.onKeyboardVisible});
+  @override
+  void didChangeMetrics() => onKeyboardVisible();
+}

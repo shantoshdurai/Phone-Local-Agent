@@ -20,6 +20,12 @@ class DeviceService {
         info['model'] = androidInfo.model;
         info['device'] = androidInfo.device;
         info['hardware'] = androidInfo.hardware;
+        info['board'] = androidInfo.board;
+        info['display'] = androidInfo.display;
+        info['product'] = androidInfo.product;
+        info['brand'] = androidInfo.brand;
+        info['supportedAbis'] = androidInfo.supportedAbis;
+        
       } else if (Platform.isIOS) {
         final iosInfo = await _deviceInfo.iosInfo;
         info['os'] = 'iOS';

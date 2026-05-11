@@ -5,6 +5,7 @@ import 'package:volume_controller/volume_controller.dart';
 import 'package:http/http.dart' as http;
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'dart:convert';
+import 'package:url_launcher/url_launcher.dart';
 
 class UtilityService {
   Future<bool> toggleFlashlight(bool on) async {
@@ -56,5 +57,15 @@ class UtilityService {
   Future<String?> readFromClipboard() async {
     final data = await Clipboard.getData(Clipboard.kTextPlain);
     return data?.text;
+  }
+
+  Future<bool> openUrl(String url) async {
+    final Uri uri = Uri.parse(url);
+    try {
+      return await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } catch (e) {
+      print('Error opening URL $url: $e');
+      return false;
+    }
   }
 }

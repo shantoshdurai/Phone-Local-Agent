@@ -1,16 +1,23 @@
-# local_agent
+# Local Agent 🤖📱
 
-A new Flutter project.
+An autonomous, file-aware AI agent for Android built with Flutter.
 
-## Getting Started
+## ✨ Features
+*   **Minimalist UI**: Clean, black-themed design inspired by ChatGPT and Claude.
+*   **Vision Integration**: Analyzes images and screenshots using Llama-3.2-Vision.
+*   **Device Autonomy**: Can manage files, apps, and system settings.
+*   **Modular Architecture**: Clean separation between services, models, and UI.
 
-This project is a starting point for a Flutter application.
+## 🏛 Architecture
+- **`lib/services/`**: Core logic for device interaction (Files, Apps, Device Info).
+- **`lib/screens/`**: UI screens (Chat, Setup, Onboarding).
+- **`lib/widgets/`**: Reusable UI components.
+- **`lib/models/`**: Data structures.
 
-A few resources to get you started if this is your first Flutter project:
+## 🚀 Future Roadmap: Local LLM
+Planning to integrate a fine-tuned **Llama-3.2-1B** or **Function Gemma** for fully offline, on-device inference using MediaPipe or MLC-LLM.
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
-
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+## 🛠 Setup
+1. Add your `GROQ_API_KEY` to a `.env` file.
+2. Run `flutter pub get`.
+3. Run `flutter run`.

@@ -51,12 +51,14 @@ dependencies:
   torch_light: ^1.0.1
   vibration: ^1.9.0
   volume_controller: ^2.0.7
-  http: ^1.2.2
+  http: ^1.6.0
   connectivity_plus: ^6.1.1
   flutter_contacts: ^1.1.9
   device_calendar: ^4.3.3
   intl: ^0.19.0
   image_picker: ^1.2.0
+  system_info_plus: ^0.0.6
+  google_generative_ai: ^0.4.7
 
 dev_dependencies:
   flutter_test:
