@@ -165,14 +165,18 @@ Tools:
     int tokenCount = 0;
 
     try {
-      // Signal UI to show streaming bubble
-      _tokenStreamController.add('\x00');
+      // DON'T send \x00 here - let the bouncing dots show first!
 
+      bool streamStarted = false;
       _tokenSubscription?.cancel();
       _tokenSubscription = Fllama.instance()?.onTokenStream?.listen((event) {
         if (event["contextId"].toString() == _contextId.toString()) {
           final token = event["token"]?.toString() ?? "";
           if (token == "<|im_end|>" || token.contains("[DONE]")) return;
+          if (!streamStarted) {
+            streamStarted = true;
+            _tokenStreamController.add('\x00'); // NOW switch from dots to streaming
+          }
           fullResponse += token;
           tokenCount++;
           _tokenStreamController.add(token);
@@ -190,19 +194,14 @@ Tools:
 
       await Future.delayed(const Duration(milliseconds: 100));
 
-      // PRIMARY: use result from completion(); FALLBACK: use stream-collected text
+      // PRIMARY: use stream-collected text; FALLBACK: use completion result
       String responseText = fullResponse.trim();
       if (responseText.isEmpty) {
         responseText = (result?["text"] ?? result?["content"] ?? "").toString().trim();
-        // If we got text from result but stream missed it, push it to UI now
-        if (responseText.isNotEmpty) {
-          _tokenStreamController.add(responseText);
-        }
       }
 
       final evalTimeMs = DateTime.now().difference(startTime).inMilliseconds;
 
-      // Token count estimation
       if (tokenCount == 0 && responseText.isNotEmpty) {
         tokenCount = responseText.split(RegExp(r'\s+')).length;
       }
@@ -210,7 +209,7 @@ Tools:
       double tps = evalTimeMs > 0 && tokenCount > 0 ? tokenCount / (evalTimeMs / 1000.0) : 0;
 
       _statusController.add('');
-      _tokenStreamController.add('\x01'); // done streaming
+      _tokenStreamController.add('\x01'); // done
 
       // Tool Detection: Markdown block or Raw JSON
       String? jsonStr;
