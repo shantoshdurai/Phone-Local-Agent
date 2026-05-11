@@ -394,9 +394,9 @@ class _ChatScreenState extends State<ChatScreen> {
                     child: Icon(Icons.auto_awesome_rounded, size: 20, color: Colors.white),
                   ),
                   Flexible(
-                    child: AnimatedSize(
-                      duration: const Duration(milliseconds: 80),
-                      alignment: Alignment.topLeft,
+                    child: AnimatedOpacity(
+                      opacity: 1.0,
+                      duration: const Duration(milliseconds: 300),
                       child: Text(
                         _streamingText,
                         style: GoogleFonts.outfit(fontSize: 17, color: Colors.white, height: 1.5),
@@ -408,13 +408,14 @@ class _ChatScreenState extends State<ChatScreen> {
             )
           else if (_isTyping && !_isStreaming)
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
               child: Row(
                 children: [
-                  const SizedBox(width: 8, height: 8, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white54)),
-                  const SizedBox(width: 12),
-                  Text(_currentStatus.isEmpty ? "Thinking..." : _currentStatus,
-                      style: const TextStyle(color: Colors.white54, fontSize: 12)),
+                  const Padding(
+                    padding: EdgeInsets.only(right: 12.0),
+                    child: Icon(Icons.auto_awesome_rounded, size: 20, color: Colors.white),
+                  ),
+                  const _BouncingDots(),
                 ],
               ),
             ),
@@ -625,4 +626,76 @@ class _KeyboardObserver extends WidgetsBindingObserver {
   _KeyboardObserver({required this.onKeyboardVisible});
   @override
   void didChangeMetrics() => onKeyboardVisible();
+}
+
+class _BouncingDots extends StatefulWidget {
+  const _BouncingDots();
+
+  @override
+  State<_BouncingDots> createState() => _BouncingDotsState();
+}
+
+class _BouncingDotsState extends State<_BouncingDots> with TickerProviderStateMixin {
+  late final List<AnimationController> _controllers;
+  late final List<Animation<double>> _animations;
+
+  @override
+  void initState() {
+    super.initState();
+    _controllers = List.generate(3, (i) {
+      return AnimationController(
+        vsync: this,
+        duration: const Duration(milliseconds: 600),
+      );
+    });
+
+    _animations = _controllers.map((c) {
+      return Tween<double>(begin: 0, end: -6).animate(
+        CurvedAnimation(parent: c, curve: Curves.easeInOut),
+      );
+    }).toList();
+
+    // Stagger the animations
+    for (int i = 0; i < 3; i++) {
+      Future.delayed(Duration(milliseconds: i * 180), () {
+        if (mounted) _controllers[i].repeat(reverse: true);
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    for (final c in _controllers) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: List.generate(3, (i) {
+        return AnimatedBuilder(
+          animation: _animations[i],
+          builder: (context, child) {
+            return Container(
+              margin: const EdgeInsets.symmetric(horizontal: 3),
+              child: Transform.translate(
+                offset: Offset(0, _animations[i].value),
+                child: Container(
+                  width: 8,
+                  height: 8,
+                  decoration: BoxDecoration(
+                    color: Colors.white54,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      }),
+    );
+  }
 }

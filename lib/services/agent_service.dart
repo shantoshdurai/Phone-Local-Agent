@@ -61,7 +61,14 @@ class AgentService {
       _contextId = null;
     }
 
-    final context = await Fllama.instance()?.initContext(_modelPath!, emitLoadProgress: false);
+    final context = await Fllama.instance()?.initContext(
+      _modelPath!,
+      emitLoadProgress: false,
+      nGpuLayers: 99,     // Offload ALL layers to GPU
+      nCtx: 1024,         // Context window
+      nBatch: 256,        // Larger batch = faster prompt processing
+      nThreads: 4,        // Use 4 CPU threads for non-GPU work
+    );
     if (context != null && context["contextId"] != null) {
       _contextId = double.tryParse(context["contextId"].toString());
     }
