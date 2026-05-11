@@ -10,7 +10,8 @@ import '../widgets/suggestions_list.dart';
 import 'api_setup_screen.dart';
 
 class ChatScreen extends StatefulWidget {
-  const ChatScreen({super.key});
+  final String modelFileName;
+  const ChatScreen({super.key, required this.modelFileName});
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -86,7 +87,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _initAgent() async {
     try {
-      await _agentService.initialize();
+      await _agentService.initialize(widget.modelFileName);
       final sessions = await _dbService.getSessions();
 
       await _createNewChat(isInitial: true);
