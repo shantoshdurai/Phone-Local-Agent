@@ -7,7 +7,7 @@ import '../services/database_service.dart';
 import '../models/chat_message.dart';
 import '../widgets/message_bubble.dart';
 import '../widgets/suggestions_list.dart';
-import 'api_setup_screen.dart';
+
 
 class ChatScreen extends StatefulWidget {
   final String modelFileName;

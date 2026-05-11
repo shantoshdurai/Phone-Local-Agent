@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:async';
 import 'package:fllama/fllama.dart';
+import 'package:fllama/fllama_type.dart';
 import 'model_downloader_service.dart';
 import 'device_service.dart';
 import 'file_service.dart';
@@ -10,7 +11,6 @@ import 'app_service.dart';
 import 'utility_service.dart';
 import 'personal_service.dart';
 import 'search_service.dart';
-import 'package:intl/intl.dart';
 
 class AgentResponse {
   final String text;
@@ -36,11 +36,12 @@ class AgentService {
   Stream<String> get statusStream => _statusController.stream;
 
   String? _modelPath;
-  List<Map<String, String>> _messages = [];
+  double? _contextId;
+  final List<Map<String, String>> _messages = [];
+  StreamSubscription? _tokenSubscription;
 
   Future<void> initialize(String modelFileName) async {
     _statusController.add('Initializing Local Engine...');
-    fllamaInit();
     
     final downloader = ModelDownloaderService();
     final dir = await downloader.getModelsDirectory();
@@ -48,6 +49,20 @@ class AgentService {
     
     if (!await File(_modelPath!).exists()) {
       throw Exception('Model file not found at $_modelPath');
+    }
+    
+    if (_contextId != null) {
+      await Fllama.instance()?.releaseContext(_contextId!);
+      _contextId = null;
+    }
+
+    final context = await Fllama.instance()?.initContext(_modelPath!, emitLoadProgress: false);
+    if (context != null && context["contextId"] != null) {
+      _contextId = double.tryParse(context["contextId"].toString());
+    }
+    
+    if (_contextId == null) {
+      throw Exception('Failed to initialize model context');
     }
     
     _messages.clear();
@@ -108,25 +123,47 @@ If you don't need a tool, just answer the user normally.
 ''';
   }
 
+  String _buildChatMLPrompt() {
+    StringBuffer sb = StringBuffer();
+    for (var msg in _messages) {
+      sb.writeln('<|im_start|>${msg['role']}\n${msg['content']}<|im_end|>');
+    }
+    sb.write('<|im_start|>assistant\n');
+    return sb.toString();
+  }
+
   Future<AgentResponse> sendMessage(String text, int sessionId, {String? imagePath}) async {
-    _statusController.add('Thinking (Local)...');
+    if (_contextId == null) throw Exception('Model not initialized');
     
+    _statusController.add('Thinking (Local)...');
     _messages.add({"role": "user", "content": text});
     
+    final prompt = _buildChatMLPrompt();
     final completer = Completer<String>();
     String fullResponse = '';
 
     try {
-      fllamaChat(
-        modelPath: _modelPath!,
-        messages: _messages,
-        onToken: (token) {
-          fullResponse += token;
-        },
-        onCompletion: (response, time) {
-          completer.complete(fullResponse);
-        },
+      _tokenSubscription?.cancel();
+      _tokenSubscription = Fllama.instance()?.onTokenStream?.listen((event) {
+        if (event["contextId"].toString() == _contextId.toString()) {
+          final token = event["token"]?.toString() ?? "";
+          if (token == "<|im_end|>" || token.contains("[DONE]")) {
+            if (!completer.isCompleted) {
+              completer.complete(fullResponse);
+            }
+          } else {
+            fullResponse += token;
+          }
+        }
+      });
+
+      await Fllama.instance()?.completion(
+        _contextId!,
+        prompt: prompt,
+        emitRealtimeCompletion: true,
+        stop: ["<|im_end|>"],
       );
+
 
       final responseText = await completer.future;
       _statusController.add('');
@@ -178,9 +215,10 @@ If you don't need a tool, just answer the user normally.
     try {
       switch (name) {
         case 'get_device_info':
-          return await _deviceService.getDeviceSpecs();
+          return await _deviceService.getDeviceInfo();
         case 'list_files':
-          return {'files': await _fileService.listFiles(args['path'], args['extension'])};
+          final files = await _fileService.indexDocuments();
+          return {'files': files.map((f) => {'name': f.name, 'path': f.path}).toList()};
         case 'toggle_flashlight':
           final on = args['on'] as bool;
           return {'success': await _utilityService.toggleFlashlight(on)};
