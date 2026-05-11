@@ -112,14 +112,15 @@ You are powered by Qwen 2.5 and have access to various local device tools.
 Because you are running completely offline, you ensure total privacy and security.
 
 ### 🛠 TOOL MASTERY RULES
-If the user asks you to perform an action, you must use a tool. Since you are running locally without native function-calling APIs, you MUST output a strict JSON block to trigger a tool.
+If the user asks you to perform an action, you must use a tool.
+To use a tool, output exactly a JSON block. Use Markdown code blocks if possible, but raw JSON is also accepted.
 
-To use a tool, output exactly this format and nothing else:
+Example for opening Instagram:
 ```json
 {
-  "tool_name": "name_of_tool",
+  "tool_name": "launch_app",
   "arguments": {
-    "arg1": "value1"
+    "packageName": "com.instagram.android"
   }
 }
 ```
@@ -132,6 +133,7 @@ Available Tools:
 5. launch_app: Launches an app by package ID. Args: {"packageName": "com.example.app"}.
 6. search_play_store: Searches the Play Store. Args: {"query": "app name"}.
 7. get_recent_screenshots: Returns recent screenshots. Args: none.
+8. get_public_ip: Returns the device public IP address. Args: none.
 
 If you don't need a tool, just answer the user normally.
 ''';
@@ -146,7 +148,7 @@ If you don't need a tool, just answer the user normally.
     return sb.toString();
   }
 
-  Future<AgentResponse> sendMessage(String text, int sessionId, {String? imagePath}) async {
+  Future<AgentResponse> sendMessage(String text, int sessionId, {String? imagePath, double? previousTps, double? previousEvalTime}) async {
     if (_contextId == null) throw Exception('Model not initialized');
     
     _statusController.add('Thinking (Local)...');
@@ -190,15 +192,20 @@ If you don't need a tool, just answer the user normally.
       
       _statusController.add('');
 
-      // Check if the response contains a tool call block
+      // Tool Detection: Markdown block or Raw JSON
+      String? jsonStr;
       final toolBlockMatch = RegExp(r'```json\n(.*?)\n```', dotAll: true).firstMatch(responseText);
-      
       if (toolBlockMatch != null) {
+        jsonStr = toolBlockMatch.group(1)!;
+      } else if (responseText.trim().startsWith('{') && responseText.trim().endsWith('}')) {
+        jsonStr = responseText.trim();
+      }
+      
+      if (jsonStr != null) {
         try {
-          final jsonStr = toolBlockMatch.group(1)!;
           final toolCall = jsonDecode(jsonStr);
           final toolName = toolCall['tool_name'];
-          final toolArgs = toolCall['arguments'];
+          final toolArgs = toolCall['arguments'] ?? {};
           
           _statusController.add('Executing $toolName...');
           final toolResult = await _executeTool(toolName, jsonEncode(toolArgs));
@@ -207,16 +214,19 @@ If you don't need a tool, just answer the user normally.
           _messages.add({"role": "assistant", "content": responseText});
           _messages.add({"role": "system", "content": "Tool Output: ${jsonEncode(toolResult)}"});
           
-          return await sendMessage("Analyze the tool output and provide the final response to the user.", sessionId);
+          return await sendMessage("Analyze the tool output and provide the final response to the user.", sessionId,
+            previousTps: tps, previousEvalTime: evalTimeMs / 1000.0);
         } catch (e) {
-          return AgentResponse("I tried to use a tool but formatted it incorrectly. Local inference glitch.", "Qwen 2.5 Local", 0, tps: tps, evalTime: evalTimeMs / 1000.0);
+          return AgentResponse("I tried to use a tool but formatted it incorrectly. Local inference glitch.", "Qwen 2.5 Local", 0, 
+            tps: previousTps ?? tps, evalTime: previousEvalTime ?? (evalTimeMs / 1000.0));
         }
       }
 
       await _dbService.saveMessage('assistant', responseText.trim(), sessionId);
       _messages.add({"role": "assistant", "content": responseText.trim()});
       
-      return AgentResponse(responseText.trim(), "Qwen 2.5 Local", 0, tps: tps, evalTime: evalTimeMs / 1000.0);
+      return AgentResponse(responseText.trim(), "Qwen 2.5 Local", 0, 
+        tps: previousTps ?? tps, evalTime: previousEvalTime ?? (evalTimeMs / 1000.0));
 
     } catch (e) {
       _statusController.add('');
@@ -238,6 +248,8 @@ If you don't need a tool, just answer the user normally.
       switch (name) {
         case 'get_device_info':
           return await _deviceService.getDeviceInfo();
+        case 'get_public_ip':
+          return await _searchService.getPublicIP();
         case 'list_files':
           final files = await _fileService.indexDocuments();
           return {'files': files.map((f) => {'name': f.name, 'path': f.path}).toList()};

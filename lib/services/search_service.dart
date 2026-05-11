@@ -54,6 +54,15 @@ class SearchService {
       }
     } catch (e) {
       return {'success': false, 'error': e.toString()};
+  Future<Map<String, dynamic>> getPublicIP() async {
+    try {
+      final response = await http.get(Uri.parse('https://api.ipify.org?format=json'));
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body);
+      }
+      return {'error': 'Failed to fetch IP'};
+    } catch (e) {
+      return {'error': e.toString()};
     }
   }
 }
