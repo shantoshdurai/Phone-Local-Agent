@@ -217,6 +217,8 @@ class _ChatScreenState extends State<ChatScreen> {
             isUser: false,
             modelName: response.modelName,
             retryCount: response.retryCount,
+            tps: response.tps,
+            evalTime: response.evalTime,
           ));
         });
         _scrollToBottom();
