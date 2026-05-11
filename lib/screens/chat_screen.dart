@@ -357,8 +357,56 @@ class _ChatScreenState extends State<ChatScreen> {
                         child: ListView.builder(
                           controller: _scrollController,
                           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                          itemCount: _messages.length,
-                          itemBuilder: (context, index) => MessageBubble(message: _messages[index]),
+                          itemCount: _messages.length + (_isTyping ? 1 : 0),
+                          itemBuilder: (context, index) {
+                            // Show thinking indicator as the last item in the list
+                            if (index == _messages.length && _isTyping) {
+                              if (_isStreaming && _streamingText.isNotEmpty) {
+                                return Padding(
+                                  padding: const EdgeInsets.symmetric(vertical: 8.0),
+                                  child: Row(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      const Padding(
+                                        padding: EdgeInsets.only(right: 12.0, top: 4),
+                                        child: Icon(Icons.auto_awesome_rounded, size: 20, color: Colors.white),
+                                      ),
+                                      Flexible(
+                                        child: Text(
+                                          _streamingText,
+                                          style: GoogleFonts.outfit(fontSize: 17, color: Colors.white, height: 1.5),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                );
+                              }
+                              return Padding(
+                                padding: const EdgeInsets.only(left: 4, top: 8, bottom: 8),
+                                child: Row(
+                                  children: [
+                                    SizedBox(
+                                      width: 12, height: 12,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 1.5,
+                                        color: Colors.white.withValues(alpha: 0.3),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 10),
+                                    Text(
+                                      'Thinking...',
+                                      style: GoogleFonts.outfit(
+                                        fontSize: 13,
+                                        color: Colors.white.withValues(alpha: 0.4),
+                                        fontStyle: FontStyle.italic,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            }
+                            return MessageBubble(message: _messages[index]);
+                          },
                         ),
                       ),
                       if (_messages.length <= 1 && !_isTyping)
@@ -382,43 +430,6 @@ class _ChatScreenState extends State<ChatScreen> {
                     ],
                   ),
           ),
-          // Real-time streaming bubble
-          if (_isStreaming && _streamingText.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Padding(
-                    padding: EdgeInsets.only(right: 12.0, top: 4),
-                    child: Icon(Icons.auto_awesome_rounded, size: 20, color: Colors.white),
-                  ),
-                  Flexible(
-                    child: AnimatedOpacity(
-                      opacity: 1.0,
-                      duration: const Duration(milliseconds: 300),
-                      child: Text(
-                        _streamingText,
-                        style: GoogleFonts.outfit(fontSize: 17, color: Colors.white, height: 1.5),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            )
-          else if (_isTyping && !_isStreaming)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-              child: Row(
-                children: [
-                  const Padding(
-                    padding: EdgeInsets.only(right: 12.0),
-                    child: Icon(Icons.auto_awesome_rounded, size: 20, color: Colors.white),
-                  ),
-                  const _BouncingDots(),
-                ],
-              ),
-            ),
           _buildMessageComposer(),
         ],
       ),
