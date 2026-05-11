@@ -158,8 +158,8 @@ Tools:
     int tokenCount = 0;
 
     try {
-      // Signal UI to show empty streaming bubble
-      _tokenStreamController.add('\x00'); // sentinel = start new streaming message
+      // Signal UI to show streaming bubble
+      _tokenStreamController.add('\x00');
 
       _tokenSubscription?.cancel();
       _tokenSubscription = Fllama.instance()?.onTokenStream?.listen((event) {
@@ -168,41 +168,50 @@ Tools:
           if (token == "<|im_end|>" || token.contains("[DONE]")) return;
           fullResponse += token;
           tokenCount++;
-          _tokenStreamController.add(token); // send each token to UI
+          _tokenStreamController.add(token);
         }
       });
 
-      await Fllama.instance()?.completion(
+      final result = await Fllama.instance()?.completion(
         _contextId!,
         prompt: prompt,
         emitRealtimeCompletion: true,
         stop: ["<|im_end|>"],
         temperature: 0.5,
+        nPredict: 256,
       );
 
-      // Give a short delay for final tokens to flush
-      await Future.delayed(const Duration(milliseconds: 150));
+      await Future.delayed(const Duration(milliseconds: 100));
+
+      // PRIMARY: use result from completion(); FALLBACK: use stream-collected text
+      String responseText = fullResponse.trim();
+      if (responseText.isEmpty) {
+        responseText = (result?["text"] ?? result?["content"] ?? "").toString().trim();
+        // If we got text from result but stream missed it, push it to UI now
+        if (responseText.isNotEmpty) {
+          _tokenStreamController.add(responseText);
+        }
+      }
 
       final evalTimeMs = DateTime.now().difference(startTime).inMilliseconds;
 
-      // Fallback token estimation if stream missed tokens
-      if (tokenCount == 0 && fullResponse.isNotEmpty) {
-        tokenCount = (fullResponse.split(RegExp(r'\s+')).length / 0.75).toInt().clamp(1, 99999);
+      // Token count estimation
+      if (tokenCount == 0 && responseText.isNotEmpty) {
+        tokenCount = responseText.split(RegExp(r'\s+')).length;
       }
 
       double tps = evalTimeMs > 0 && tokenCount > 0 ? tokenCount / (evalTimeMs / 1000.0) : 0;
 
       _statusController.add('');
-      _tokenStreamController.add('\x01'); // sentinel = done streaming
+      _tokenStreamController.add('\x01'); // done streaming
 
       // Tool Detection: Markdown block or Raw JSON
       String? jsonStr;
-      final trimmed = fullResponse.trim();
-      final toolBlockMatch = RegExp(r'```json\n?(.*?)\n?```', dotAll: true).firstMatch(trimmed);
+      final toolBlockMatch = RegExp(r'```json\n?(.*?)\n?```', dotAll: true).firstMatch(responseText);
       if (toolBlockMatch != null) {
         jsonStr = toolBlockMatch.group(1)!.trim();
-      } else if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
-        jsonStr = trimmed;
+      } else if (responseText.startsWith('{') && responseText.endsWith('}')) {
+        jsonStr = responseText;
       }
 
       if (jsonStr != null) {
@@ -214,10 +223,9 @@ Tools:
           _statusController.add('Running $toolName...');
           final toolResult = await _executeTool(toolName, jsonEncode(toolArgs));
 
-          _messages.add({"role": "assistant", "content": trimmed});
+          _messages.add({"role": "assistant", "content": responseText});
           _messages.add({"role": "system", "content": "Tool result: ${jsonEncode(toolResult)}"});
 
-          // Direct, short answer instruction
           return await sendMessage(
             "Answer the user's original request in ONE short sentence using only the relevant data from the tool result. No preamble.",
             sessionId,
@@ -229,14 +237,20 @@ Tools:
         }
       }
 
-      await _dbService.saveMessage('assistant', fullResponse.trim(), sessionId);
-      _messages.add({"role": "assistant", "content": fullResponse.trim()});
+      // If response is still empty, provide fallback
+      if (responseText.isEmpty) {
+        responseText = "I processed your request but couldn't generate a response. Try rephrasing.";
+      }
 
-      return AgentResponse(fullResponse.trim(), "Qwen 2.5", 0,
+      await _dbService.saveMessage('assistant', responseText, sessionId);
+      _messages.add({"role": "assistant", "content": responseText});
+
+      return AgentResponse(responseText, "Qwen 2.5", 0,
         tps: previousTps ?? tps, evalTime: previousEvalTime ?? (evalTimeMs / 1000.0));
 
     } catch (e) {
       _statusController.add('');
+      _tokenStreamController.add('\x01');
       return AgentResponse('Error: $e', 'error', 0);
     }
   }
