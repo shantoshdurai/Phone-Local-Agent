@@ -36,6 +36,18 @@ class _ChatScreenState extends State<ChatScreen> {
   String _streamingText = '';        // live accumulating text
   bool _isStreaming = false;         // showing the streaming bubble
   StreamSubscription? _tokenSub;
+  Timer? _thinkingTimer;
+  int _thinkingMessageIndex = 0;
+  final List<String> _thinkingMessages = [
+    'Thinking...',
+    'Cooking up a response...',
+    'Analyzing context...',
+    'Manifesting answers...',
+    'Gathering local data...',
+    'Optimizing inference...',
+    'Consulting the neural engine...',
+    'Getting ready...',
+  ];
 
   final List<Map<String, dynamic>> _allSuggestions = [
     {'text': 'Download the latest WhatsApp APK', 'icon': Icons.download_rounded},
@@ -112,8 +124,28 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  void _startThinkingAnimation() {
+    _thinkingTimer?.cancel();
+    _thinkingMessageIndex = 0;
+    _thinkingTimer = Timer.periodic(const Duration(seconds: 3), (timer) {
+      if (mounted && _isTyping && !_isStreaming) {
+        setState(() {
+          _thinkingMessageIndex = (_thinkingMessageIndex + 1) % _thinkingMessages.length;
+        });
+      } else if (!_isTyping || _isStreaming) {
+        _stopThinkingAnimation();
+      }
+    });
+  }
+
+  void _stopThinkingAnimation() {
+    _thinkingTimer?.cancel();
+    _thinkingTimer = null;
+  }
+
   @override
   void dispose() {
+    _thinkingTimer?.cancel();
     _tokenSub?.cancel();
     _textController.dispose();
     _scrollController.dispose();
@@ -217,6 +249,7 @@ class _ChatScreenState extends State<ChatScreen> {
       _messages.add(ChatMessage(text: text, isUser: true, imagePath: imagePath));
       _isTyping = true;
     });
+    _startThinkingAnimation();
 
     // Save user message to database
     await _dbService.saveMessage('user', text, _currentSessionId!);
@@ -394,7 +427,7 @@ class _ChatScreenState extends State<ChatScreen> {
                                     ),
                                     const SizedBox(width: 10),
                                     Text(
-                                      'Thinking...',
+                                      _thinkingMessages[_thinkingMessageIndex],
                                       style: GoogleFonts.outfit(
                                         fontSize: 13,
                                         color: Colors.white.withValues(alpha: 0.4),
