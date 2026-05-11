@@ -49,7 +49,8 @@ class AgentService {
   String? _activeApiKey;
   int _geminiModelIndex = 0;
   final List<String> _geminiModels = [
-    'gemini-2.5-flash',
+    'gemini-2.0-flash-exp',
+    'gemini-1.5-flash',
   ];
   
   final _statusController = StreamController<String>.broadcast();
@@ -125,7 +126,7 @@ class AgentService {
 
           ### 🛠 TOOL MASTERY RULES
           1. **Direct Action**: Never ask "Would you like me to...?" Just do it. If the user says "Uninstall WhatsApp," call the tool immediately.
-          2. **Package Name Accuracy**: For app actions, if you aren't 100% sure of the `packageName`, call `list_apps` first. NEVER guess a package name.
+          2. **Package Name Accuracy**: For app actions, if you aren't 100% sure of the `packageName`, call `list_apps` first. If you want to open the Play Store for an app but don't know the package ID, use `search_play_store` with the app name.
           3. **Search Depth**: When searching for files, use broad queries. If "Project_Doc_v2.pdf" fails, try searching for "Project" or ".pdf".
           4. **Web Search Diligence**: When searching the web (e.g., for APK downloads), carefully inspect the "links" and "result" fields in the tool output. 
              - For WhatsApp, try official URLs like `https://www.whatsapp.com/android/` or `https://www.whatsapp.com/download`.
