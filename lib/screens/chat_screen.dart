@@ -9,7 +9,7 @@ import '../services/model_downloader_service.dart';
 import '../models/chat_message.dart';
 import '../widgets/message_bubble.dart';
 import '../widgets/suggestions_list.dart';
-import 'home_screen.dart';
+import 'settings_screen.dart';
 
 
 class ChatScreen extends StatefulWidget {
@@ -373,7 +373,7 @@ class _ChatScreenState extends State<ChatScreen> {
           IconButton(
             icon: const Icon(Icons.settings_outlined, size: 20, color: Colors.white70),
             onPressed: () {
-              Navigator.push(context, MaterialPageRoute(builder: (context) => const HomeScreen()));
+              Navigator.push(context, MaterialPageRoute(builder: (context) => const SettingsScreen()));
             },
           ),
         ],
