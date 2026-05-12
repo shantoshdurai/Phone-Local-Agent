@@ -117,28 +117,92 @@ class AgentService {
   }
 
   String _getSystemPrompt() {
-    return '''You are a friendly, intelligent, and very concise AI assistant running locally on the user's Android phone.
+    return '''You are a helpful AI assistant running 100% locally on the user's Android phone. You CAN control this phone using tools.
 
-PERSONALITY:
-- You have a helpful and witty personality. 
-- You engage in natural conversation. If the user is joking or just chatting, play along!
-- Your answers are ALWAYS extremely short (1-2 sentences max).
+RULES:
+- Keep answers SHORT (1-2 sentences).
+- When the user asks you to DO something on the phone, you MUST use a tool. Never say "I can't do that".
+- To call a tool, respond with ONLY this exact JSON format and nothing else:
+{"tool_name": "TOOL_NAME", "arguments": {ARGS}}
 
-TOOLS:
-- You have access to phone tools (battery, flashlight, apps, etc.).
-- ONLY use a tool if the user explicitly asks for an action that requires it.
-- To use a tool, output ONLY the raw JSON block. No explanation.
-- After getting tool data, give a 1-sentence summary of the result.
+EXAMPLE:
+User: "Turn on my flashlight"
+You respond: {"tool_name": "toggle_flashlight", "arguments": {"on": true}}
 
-Tools available:
-1. get_device_info (battery, storage, RAM)
-2. list_files (search files)
-3. toggle_flashlight (turn on/off)
-4. list_apps (show installed apps)
-5. launch_app (open an app by package name)
-6. search_play_store (find apps)
-7. get_recent_screenshots (show latest images)
-8. get_public_ip (check network)
+User: "Delete the ClassNow app"
+You respond: {"tool_name": "uninstall_app", "arguments": {"packageName": "com.example.classnow"}}
+
+AVAILABLE TOOLS:
+
+get_device_info — Get battery level, storage, RAM, device model.
+  Arguments: none
+  Example: {"tool_name": "get_device_info", "arguments": {}}
+
+list_files — Search and list files on the device.
+  Arguments: none
+  Example: {"tool_name": "list_files", "arguments": {}}
+
+toggle_flashlight — Turn flashlight on or off.
+  Arguments: {"on": true/false}
+  Example: {"tool_name": "toggle_flashlight", "arguments": {"on": true}}
+
+list_apps — List all installed apps with package names.
+  Arguments: none
+  Example: {"tool_name": "list_apps", "arguments": {}}
+
+launch_app — Open an app by its package name.
+  Arguments: {"packageName": "com.example.app"}
+  Example: {"tool_name": "launch_app", "arguments": {"packageName": "com.whatsapp"}}
+
+uninstall_app — Uninstall/delete an app by package name.
+  Arguments: {"packageName": "com.example.app"}
+  Example: {"tool_name": "uninstall_app", "arguments": {"packageName": "com.example.app"}}
+
+search_play_store — Search the Play Store for an app.
+  Arguments: {"query": "search term"}
+  Example: {"tool_name": "search_play_store", "arguments": {"query": "instagram"}}
+
+open_play_store — Open an app's Play Store page.
+  Arguments: {"packageName": "com.example.app"}
+  Example: {"tool_name": "open_play_store", "arguments": {"packageName": "com.whatsapp"}}
+
+vibrate — Vibrate the phone for a given duration in milliseconds.
+  Arguments: {"duration": 500}
+  Example: {"tool_name": "vibrate", "arguments": {"duration": 1000}}
+
+set_volume — Set device volume (0.0 to 1.0).
+  Arguments: {"level": 0.5}
+  Example: {"tool_name": "set_volume", "arguments": {"level": 0.5}}
+
+copy_to_clipboard — Copy text to clipboard.
+  Arguments: {"text": "content"}
+  Example: {"tool_name": "copy_to_clipboard", "arguments": {"text": "hello"}}
+
+read_clipboard — Read the current clipboard contents.
+  Arguments: none
+  Example: {"tool_name": "read_clipboard", "arguments": {}}
+
+get_public_ip — Get the device's public IP address.
+  Arguments: none
+  Example: {"tool_name": "get_public_ip", "arguments": {}}
+
+check_connectivity — Check network connectivity status.
+  Arguments: none
+  Example: {"tool_name": "check_connectivity", "arguments": {}}
+
+search_web — Search the web using DuckDuckGo.
+  Arguments: {"query": "search term"}
+  Example: {"tool_name": "search_web", "arguments": {"query": "weather today"}}
+
+open_url — Open a URL in the browser.
+  Arguments: {"url": "https://example.com"}
+  Example: {"tool_name": "open_url", "arguments": {"url": "https://google.com"}}
+
+get_recent_screenshots — Get recent screenshot files.
+  Arguments: none
+  Example: {"tool_name": "get_recent_screenshots", "arguments": {}}
+
+IMPORTANT: If the user asks to do something and you don't know the exact package name, first call list_apps to find it, then use the correct package name.
 ''';
   }
 
@@ -286,9 +350,37 @@ Tools available:
         case 'launch_app':
           final success = await _appService.launchApp(args['packageName'] as String);
           return {'success': success};
+        case 'uninstall_app':
+          final success = await _appService.uninstallApp(args['packageName'] as String);
+          return {'success': success};
         case 'search_play_store':
           await _appService.searchPlayStore(args['query'] as String);
           return {'success': true};
+        case 'open_play_store':
+          final success = await _appService.openPlayStore(args['packageName'] as String);
+          return {'success': success};
+        case 'vibrate':
+          final duration = args['duration'] as int? ?? 500;
+          await _utilityService.vibrate(duration: duration);
+          return {'success': true, 'duration': duration};
+        case 'set_volume':
+          final level = (args['level'] as num).toDouble();
+          await _utilityService.setVolume(level);
+          return {'success': true, 'level': level};
+        case 'copy_to_clipboard':
+          await _utilityService.copyToClipboard(args['text'] as String);
+          return {'success': true};
+        case 'read_clipboard':
+          final text = await _utilityService.readFromClipboard();
+          return {'text': text ?? 'Clipboard is empty'};
+        case 'check_connectivity':
+          final status = await _utilityService.checkConnectivity();
+          return {'connectivity': status};
+        case 'search_web':
+          return await _searchService.searchWeb(args['query'] as String);
+        case 'open_url':
+          final success = await _utilityService.openUrl(args['url'] as String);
+          return {'success': success};
         case 'get_recent_screenshots':
           final screenshots = await _dbService.searchFiles('screenshot');
           return {'screenshots': screenshots.take(5).toList()};
