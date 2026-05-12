@@ -3,12 +3,15 @@ import 'package:installed_apps/app_info.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 class AppService {
+  List<AppInfo>? _cachedApps;
+
   Future<List<Map<String, dynamic>>> getInstalledApps() async {
     try {
       List<AppInfo> apps = await InstalledApps.getInstalledApps(
         excludeSystemApps: false,
         withIcon: false,
       );
+      _cachedApps = apps;
       
       return apps.map((app) => {
         'name': app.name,
@@ -19,6 +22,88 @@ class AppService {
     } catch (e) {
       print('Error getting installed apps: $e');
       return [];
+    }
+  }
+
+  /// Smart app launcher: finds the app by name (fuzzy match) and launches it.
+  /// Returns a result map with success status and details.
+  Future<Map<String, dynamic>> launchAppByName(String appName) async {
+    try {
+      // Ensure we have the app list
+      if (_cachedApps == null) {
+        await getInstalledApps();
+      }
+      final apps = _cachedApps ?? [];
+
+      final query = appName.toLowerCase().trim();
+
+      // Try exact name match first
+      AppInfo? match;
+      for (var app in apps) {
+        if (app.name.toLowerCase() == query) {
+          match = app;
+          break;
+        }
+      }
+
+      // Fuzzy: name contains query
+      if (match == null) {
+        for (var app in apps) {
+          if (app.name.toLowerCase().contains(query)) {
+            match = app;
+            break;
+          }
+        }
+      }
+
+      // Fuzzy: query contains app name
+      if (match == null) {
+        for (var app in apps) {
+          if (query.contains(app.name.toLowerCase())) {
+            match = app;
+            break;
+          }
+        }
+      }
+
+      // Fuzzy: package name contains query
+      if (match == null) {
+        for (var app in apps) {
+          if (app.packageName.toLowerCase().contains(query)) {
+            match = app;
+            break;
+          }
+        }
+      }
+
+      if (match != null) {
+        final success = await InstalledApps.startApp(match.packageName) ?? false;
+        return {
+          'success': success,
+          'appName': match.name,
+          'packageName': match.packageName,
+          'message': success
+              ? '${match.name} has been launched.'
+              : 'Failed to launch ${match.name}.',
+        };
+      } else {
+        // Find closest matches for suggestion
+        final suggestions = apps
+            .where((a) =>
+                a.name.toLowerCase().contains(query.substring(0, (query.length * 0.5).ceil().clamp(1, query.length))) ||
+                query.contains(a.name.toLowerCase().substring(0, (a.name.length * 0.5).ceil().clamp(1, a.name.length))))
+            .take(3)
+            .map((a) => a.name)
+            .toList();
+
+        return {
+          'success': false,
+          'message': 'App "$appName" not found on this device.',
+          'suggestions': suggestions,
+        };
+      }
+    } catch (e) {
+      return {'success': false, 'message': 'Error: $e'};
     }
   }
 

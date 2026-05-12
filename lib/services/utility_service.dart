@@ -45,6 +45,86 @@ class UtilityService {
     return 'Unknown';
   }
 
+  /// Enhanced connectivity check with technical details
+  Future<Map<String, dynamic>> checkConnectivityDetailed() async {
+    final result = <String, dynamic>{};
+
+    // Connection type
+    try {
+      final connectivityResult = await Connectivity().checkConnectivity();
+      String type = 'Unknown';
+      for (var r in connectivityResult) {
+        if (r == ConnectivityResult.wifi) {
+          type = 'WiFi';
+        } else if (r == ConnectivityResult.mobile) {
+          type = 'Mobile Data';
+        } else if (r == ConnectivityResult.ethernet) {
+          type = 'Ethernet';
+        } else if (r == ConnectivityResult.none) {
+          type = 'No Connection';
+        }
+      }
+      result['connectionType'] = type;
+    } catch (e) {
+      result['connectionType'] = 'Unknown';
+    }
+
+    // Public IP
+    try {
+      final ipResponse = await http
+          .get(Uri.parse('https://api.ipify.org?format=json'))
+          .timeout(const Duration(seconds: 5));
+      if (ipResponse.statusCode == 200) {
+        result['publicIP'] = jsonDecode(ipResponse.body)['ip'];
+      }
+    } catch (_) {
+      result['publicIP'] = 'Could not fetch';
+    }
+
+    // Ping / Latency test (measure HTTP round-trip to a fast endpoint)
+    try {
+      final stopwatch = Stopwatch()..start();
+      await http
+          .get(Uri.parse('https://www.google.com/generate_204'))
+          .timeout(const Duration(seconds: 5));
+      stopwatch.stop();
+      result['pingMs'] = stopwatch.elapsedMilliseconds;
+      result['latency'] = '${stopwatch.elapsedMilliseconds}ms';
+    } catch (_) {
+      result['pingMs'] = -1;
+      result['latency'] = 'Timeout / Unreachable';
+    }
+
+    // DNS resolution test
+    try {
+      final stopwatch = Stopwatch()..start();
+      await http
+          .head(Uri.parse('https://dns.google/'))
+          .timeout(const Duration(seconds: 5));
+      stopwatch.stop();
+      result['dnsMs'] = stopwatch.elapsedMilliseconds;
+    } catch (_) {
+      result['dnsMs'] = -1;
+    }
+
+    // Quality assessment
+    final ping = result['pingMs'] as int? ?? -1;
+    if (ping < 0) {
+      result['quality'] = 'No Internet';
+    } else if (ping < 100) {
+      result['quality'] = 'Excellent';
+    } else if (ping < 200) {
+      result['quality'] = 'Good';
+    } else if (ping < 500) {
+      result['quality'] = 'Fair';
+    } else {
+      result['quality'] = 'Poor';
+    }
+
+    return result;
+  }
+
+  /// Simple connectivity check (legacy)
   Future<String> checkConnectivity() async {
     final connectivityResult = await Connectivity().checkConnectivity();
     return connectivityResult.toString();

@@ -139,7 +139,7 @@ TOOLS:
 - open_play_store: {"packageName": "com.example"}
 - vibrate: {"duration": 500}
 - set_volume: {"level": 0.5}
-- copy_to_clipboard: {"text": "content"}
+- copy_to_clipboard: {"text": "..."}
 - read_clipboard: read what was last copied
 - get_public_ip: get IP address
 - check_connectivity: check wifi/network status
@@ -392,10 +392,38 @@ TOOLS:
       return {'tool_name': 'list_files', 'arguments': {}};
     }
 
-    // ─── Apps ───
+    // ─── Apps: list ───
     if (msg.contains('installed app') || msg.contains('list app') || msg.contains('my app') ||
         msg.contains('show app')) {
       return {'tool_name': 'list_apps', 'arguments': {}};
+    }
+
+    // ─── Apps: launch/open by name ───
+    final launchPatterns = ['launch ', 'open ', 'start ', 'run '];
+    for (final p in launchPatterns) {
+      if (msg.contains(p)) {
+        // Extract app name after the keyword
+        final idx = msg.indexOf(p);
+        var appName = msg.substring(idx + p.length).trim();
+        // Remove trailing words like "app", "application"
+        appName = appName.replaceAll(RegExp(r'\s*(app|application|the)\s*$'), '').trim();
+        if (appName.isNotEmpty) {
+          return {'tool_name': 'launch_app_by_name', 'arguments': {'appName': appName}};
+        }
+      }
+    }
+
+    // ─── Apps: delete/remove/uninstall by name ───
+    final deletePatterns = ['delete ', 'remove ', 'uninstall '];
+    for (final p in deletePatterns) {
+      if (msg.contains(p)) {
+        final idx = msg.indexOf(p);
+        var appName = msg.substring(idx + p.length).trim();
+        appName = appName.replaceAll(RegExp(r'\s*(app|application|the)\s*$'), '').trim();
+        if (appName.isNotEmpty) {
+          return {'tool_name': 'uninstall_app_by_name', 'arguments': {'appName': appName}};
+        }
+      }
     }
 
     return null; // No match — let the model's response pass through
@@ -453,13 +481,21 @@ TOOLS:
           final text = await _utilityService.readFromClipboard();
           return {'text': text ?? 'Clipboard is empty'};
         case 'check_connectivity':
-          final status = await _utilityService.checkConnectivity();
-          return {'connectivity': status};
+          return await _utilityService.checkConnectivityDetailed();
         case 'search_web':
           return await _searchService.searchWeb(args['query'] as String);
         case 'open_url':
           final success = await _utilityService.openUrl(args['url'] as String);
           return {'success': success};
+        case 'launch_app_by_name':
+          return await _appService.launchAppByName(args['appName'] as String);
+        case 'uninstall_app_by_name':
+          final result = await _appService.launchAppByName(args['appName'] as String);
+          if (result['packageName'] != null) {
+            final success = await _appService.uninstallApp(result['packageName'] as String);
+            return {'success': success, 'appName': result['appName'], 'packageName': result['packageName']};
+          }
+          return result;
         case 'get_recent_screenshots':
           final screenshots = await _dbService.searchFiles('screenshot');
           return {'screenshots': screenshots.take(5).toList()};
