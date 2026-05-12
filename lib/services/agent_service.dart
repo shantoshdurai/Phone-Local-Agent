@@ -419,7 +419,7 @@ TOOLS:
       }
     }
 
-    // ─── Apps: download/install from Play Store ───
+    // ─── Apps: download/install ───
     if (msg.contains('download') || msg.contains('install') || msg.contains('apk') ||
         msg.contains('play store') || msg.contains('playstore') || msg.contains('get the app')) {
       // Extract app name by removing noise words
@@ -427,13 +427,24 @@ TOOLS:
       final noiseWords = [
         'download', 'install', 'the', 'latest', 'apk', 'app', 'application',
         'from', 'play', 'store', 'playstore', 'please', 'can', 'you', 'i',
-        'want', 'to', 'need', 'get', 'me', 'for', 'a', 'an',
+        'want', 'to', 'need', 'get', 'me', 'for', 'a', 'an', 'browser',
       ];
       for (final w in noiseWords) {
         appName = appName.replaceAll(RegExp('\\b$w\\b', caseSensitive: false), '');
       }
       appName = appName.replaceAll(RegExp(r'\s+'), ' ').trim();
+
       if (appName.isNotEmpty) {
+        // "apk" mentioned → open browser to download APK file
+        // (for third-party apps like ReVanced, modded apps, etc.)
+        if (msg.contains('apk')) {
+          final searchQuery = Uri.encodeComponent('$appName APK download');
+          return {
+            'tool_name': 'open_url',
+            'arguments': {'url': 'https://www.google.com/search?q=$searchQuery'}
+          };
+        }
+        // No "apk" → Play Store (regular installs)
         return {'tool_name': 'search_play_store', 'arguments': {'query': appName}};
       }
     }
