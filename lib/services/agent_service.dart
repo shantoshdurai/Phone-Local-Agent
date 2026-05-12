@@ -309,25 +309,25 @@ TOOLS:
 
   /// Keyword-based auto-detection: when the model fails to produce JSON,
   /// we match the user's original message to automatically call the right tool.
+  /// PRIORITY ORDER: specific tools first → generic web search last.
   Map<String, dynamic>? _detectToolFromUserMessage(String userText) {
     final msg = userText.toLowerCase().trim();
+    final wordCount = msg.split(RegExp(r'\s+')).length;
 
-    // ─── Web Search: any factual/knowledge question the model can't answer ───
-    final searchPatterns = [
-      'who is', 'who are', 'who was', 'what is', 'what are', 'what was',
-      'when is', 'when did', 'where is', 'where are', 'how to', 'how do',
-      'how does', 'how much', 'how many', 'tell me about', 'explain',
-      'define', 'meaning of', 'latest', 'current', 'today', 'news',
-      'capital of', 'president of', 'prime minister', 'chief minister',
-      'cm of', 'cm now', 'weather', 'population', 'price of', 'cost of',
-      'search for', 'search about', 'look up', 'google', 'find out',
-      'download', 'apk',
-    ];
-    for (final p in searchPatterns) {
-      if (msg.contains(p)) {
-        // Use the user's full message as the search query
-        return {'tool_name': 'search_web', 'arguments': {'query': userText}};
-      }
+    // Skip very short messages — these are likely conversational follow-ups
+    // ("nah rn who is?", "yeah", "ok", "no") that the model should handle
+    if (wordCount <= 3 && !_hasSpecificToolKeyword(msg)) {
+      return null;
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    // SPECIFIC TOOL PATTERNS (checked FIRST — highest priority)
+    // ════════════════════════════════════════════════════════════════
+
+    // ─── Clipboard (must be before "what is" search pattern!) ───
+    if (msg.contains('clipboard') || msg.contains('copied') || msg.contains('pasted') ||
+        msg.contains('last copy') || msg.contains('last thing i cop') || msg.contains('paste')) {
+      return {'tool_name': 'read_clipboard', 'arguments': {}};
     }
 
     // ─── Network / Connectivity ───
@@ -337,12 +337,6 @@ TOOLS:
     }
     if (msg.contains('ip address') || msg.contains('my ip') || msg.contains('public ip') || msg.contains('ping')) {
       return {'tool_name': 'get_public_ip', 'arguments': {}};
-    }
-
-    // ─── Clipboard ───
-    if (msg.contains('clipboard') || msg.contains('copied') || msg.contains('pasted') ||
-        msg.contains('last copy') || msg.contains('last thing i cop') || msg.contains('paste')) {
-      return {'tool_name': 'read_clipboard', 'arguments': {}};
     }
 
     // ─── Device Info ───
@@ -377,7 +371,7 @@ TOOLS:
       int duration = 500;
       if (match != null) {
         final val = int.tryParse(match.group(1)!) ?? 500;
-        duration = val < 10 ? val * 1000 : val; // "vibrate for 2 seconds" → 2000
+        duration = val < 10 ? val * 1000 : val;
       }
       return {'tool_name': 'vibrate', 'arguments': {'duration': duration}};
     }
@@ -388,7 +382,7 @@ TOOLS:
     }
 
     // ─── Files ───
-    if (msg.contains('files') || msg.contains('documents') || msg.contains('pdf') || msg.contains('apk')) {
+    if (msg.contains('files') || msg.contains('documents') || msg.contains('pdf')) {
       return {'tool_name': 'list_files', 'arguments': {}};
     }
 
@@ -402,10 +396,8 @@ TOOLS:
     final launchPatterns = ['launch ', 'open ', 'start ', 'run '];
     for (final p in launchPatterns) {
       if (msg.contains(p)) {
-        // Extract app name after the keyword
         final idx = msg.indexOf(p);
         var appName = msg.substring(idx + p.length).trim();
-        // Remove trailing words like "app", "application"
         appName = appName.replaceAll(RegExp(r'\s*(app|application|the)\s*$'), '').trim();
         if (appName.isNotEmpty) {
           return {'tool_name': 'launch_app_by_name', 'arguments': {'appName': appName}};
@@ -426,8 +418,52 @@ TOOLS:
       }
     }
 
+    // ════════════════════════════════════════════════════════════════
+    // WEB SEARCH (checked LAST — lowest priority, catch-all)
+    // Only for messages that clearly look like a question, not follow-ups
+    // ════════════════════════════════════════════════════════════════
+    if (wordCount >= 4) {
+      final searchStarters = [
+        'who is', 'who are', 'who was', 'what is', 'what are', 'what was',
+        'when is', 'when did', 'when was', 'where is', 'where are',
+        'how to', 'how do', 'how does', 'how much', 'how many',
+        'tell me about', 'explain', 'define', 'meaning of',
+      ];
+      for (final p in searchStarters) {
+        if (msg.startsWith(p)) {
+          return {'tool_name': 'search_web', 'arguments': {'query': userText}};
+        }
+      }
+
+      // Topic-specific search keywords (can be anywhere)
+      final topicPatterns = [
+        'capital of', 'president of', 'prime minister', 'chief minister',
+        'cm of', 'weather in', 'population of', 'price of', 'cost of',
+        'search for', 'search about', 'look up', 'google',
+        'find out', 'latest news',
+      ];
+      for (final p in topicPatterns) {
+        if (msg.contains(p)) {
+          return {'tool_name': 'search_web', 'arguments': {'query': userText}};
+        }
+      }
+    }
+
     return null; // No match — let the model's response pass through
   }
+
+  /// Check if the message contains a specific tool keyword even if short
+  bool _hasSpecificToolKeyword(String msg) {
+    const specificKeywords = [
+      'clipboard', 'copied', 'paste', 'battery', 'flashlight', 'torch',
+      'volume', 'vibrat', 'screenshot', 'wifi', 'network', 'ping',
+    ];
+    for (final k in specificKeywords) {
+      if (msg.contains(k)) return true;
+    }
+    return false;
+  }
+
 
 
   Future<Map<String, dynamic>> _executeTool(String name, String? argumentsJson) async {
