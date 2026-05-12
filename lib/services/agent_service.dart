@@ -332,7 +332,8 @@ TOOLS:
 
     // ─── Network / Connectivity ───
     if (msg.contains('network') || msg.contains('wifi') || msg.contains('internet') ||
-        msg.contains('connection') || msg.contains('connectivity') || msg.contains('signal')) {
+        msg.contains('connection') || msg.contains('connectivity') || msg.contains('signal') ||
+        msg.contains('ping') || msg.contains('speed test') || msg.contains('network speed')) {
       return {'tool_name': 'check_connectivity', 'arguments': {}};
     }
     if (msg.contains('ip address') || msg.contains('my ip') || msg.contains('public ip') || msg.contains('ping')) {
@@ -387,8 +388,8 @@ TOOLS:
     }
 
     // ─── Apps: list ───
-    if (msg.contains('installed app') || msg.contains('list app') || msg.contains('my app') ||
-        msg.contains('show app')) {
+    if ((msg.contains('list') || msg.contains('show') || msg.contains('what')) && 
+        (msg.contains('app') || msg.contains('application') || msg.contains('package'))) {
       return {'tool_name': 'list_apps', 'arguments': {}};
     }
 
@@ -422,7 +423,7 @@ TOOLS:
     // WEB SEARCH (checked LAST — lowest priority, catch-all)
     // Only for messages that clearly look like a question, not follow-ups
     // ════════════════════════════════════════════════════════════════
-    if (wordCount >= 4) {
+    if (wordCount >= 3) {
       final searchStarters = [
         'who is', 'who are', 'who was', 'what is', 'what are', 'what was',
         'when is', 'when did', 'when was', 'where is', 'where are',
@@ -430,7 +431,7 @@ TOOLS:
         'tell me about', 'explain', 'define', 'meaning of',
       ];
       for (final p in searchStarters) {
-        if (msg.startsWith(p)) {
+        if (msg.contains(p)) {
           return {'tool_name': 'search_web', 'arguments': {'query': userText}};
         }
       }
@@ -440,7 +441,7 @@ TOOLS:
         'capital of', 'president of', 'prime minister', 'chief minister',
         'cm of', 'weather in', 'population of', 'price of', 'cost of',
         'search for', 'search about', 'look up', 'google',
-        'find out', 'latest news',
+        'find out', 'latest news', 'news about', 'current status of',
       ];
       for (final p in topicPatterns) {
         if (msg.contains(p)) {
