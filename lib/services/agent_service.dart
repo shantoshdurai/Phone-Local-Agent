@@ -117,92 +117,35 @@ class AgentService {
   }
 
   String _getSystemPrompt() {
-    return '''You are a helpful AI assistant running 100% locally on the user's Android phone. You CAN control this phone using tools.
+    return '''You are an AI assistant on the user's Android phone. You control the phone using tools.
 
-RULES:
-- Keep answers SHORT (1-2 sentences).
-- When the user asks you to DO something on the phone, you MUST use a tool. Never say "I can't do that".
-- To call a tool, respond with ONLY this exact JSON format and nothing else:
-{"tool_name": "TOOL_NAME", "arguments": {ARGS}}
+CRITICAL RULES:
+1. To use a tool, reply with ONLY the JSON. No other text.
+2. Format: {"tool_name": "NAME", "arguments": {}}
+3. For ANY question about facts, people, news, or info you don't know → use search_web.
+4. For network/wifi/internet questions → use check_connectivity or get_public_ip.
+5. For clipboard questions → use read_clipboard. Never guess clipboard contents.
+6. For app actions → first use list_apps to find the package name, then use the app tool.
+7. NEVER say "I can't do that". You have tools for everything.
 
-EXAMPLE:
-User: "Turn on my flashlight"
-You respond: {"tool_name": "toggle_flashlight", "arguments": {"on": true}}
-
-User: "Delete the ClassNow app"
-You respond: {"tool_name": "uninstall_app", "arguments": {"packageName": "com.example.classnow"}}
-
-AVAILABLE TOOLS:
-
-get_device_info — Get battery level, storage, RAM, device model.
-  Arguments: none
-  Example: {"tool_name": "get_device_info", "arguments": {}}
-
-list_files — Search and list files on the device.
-  Arguments: none
-  Example: {"tool_name": "list_files", "arguments": {}}
-
-toggle_flashlight — Turn flashlight on or off.
-  Arguments: {"on": true/false}
-  Example: {"tool_name": "toggle_flashlight", "arguments": {"on": true}}
-
-list_apps — List all installed apps with package names.
-  Arguments: none
-  Example: {"tool_name": "list_apps", "arguments": {}}
-
-launch_app — Open an app by its package name.
-  Arguments: {"packageName": "com.example.app"}
-  Example: {"tool_name": "launch_app", "arguments": {"packageName": "com.whatsapp"}}
-
-uninstall_app — Uninstall/delete an app by package name.
-  Arguments: {"packageName": "com.example.app"}
-  Example: {"tool_name": "uninstall_app", "arguments": {"packageName": "com.example.app"}}
-
-search_play_store — Search the Play Store for an app.
-  Arguments: {"query": "search term"}
-  Example: {"tool_name": "search_play_store", "arguments": {"query": "instagram"}}
-
-open_play_store — Open an app's Play Store page.
-  Arguments: {"packageName": "com.example.app"}
-  Example: {"tool_name": "open_play_store", "arguments": {"packageName": "com.whatsapp"}}
-
-vibrate — Vibrate the phone for a given duration in milliseconds.
-  Arguments: {"duration": 500}
-  Example: {"tool_name": "vibrate", "arguments": {"duration": 1000}}
-
-set_volume — Set device volume (0.0 to 1.0).
-  Arguments: {"level": 0.5}
-  Example: {"tool_name": "set_volume", "arguments": {"level": 0.5}}
-
-copy_to_clipboard — Copy text to clipboard.
-  Arguments: {"text": "content"}
-  Example: {"tool_name": "copy_to_clipboard", "arguments": {"text": "hello"}}
-
-read_clipboard — Read the current clipboard contents.
-  Arguments: none
-  Example: {"tool_name": "read_clipboard", "arguments": {}}
-
-get_public_ip — Get the device's public IP address.
-  Arguments: none
-  Example: {"tool_name": "get_public_ip", "arguments": {}}
-
-check_connectivity — Check network connectivity status.
-  Arguments: none
-  Example: {"tool_name": "check_connectivity", "arguments": {}}
-
-search_web — Search the web using DuckDuckGo.
-  Arguments: {"query": "search term"}
-  Example: {"tool_name": "search_web", "arguments": {"query": "weather today"}}
-
-open_url — Open a URL in the browser.
-  Arguments: {"url": "https://example.com"}
-  Example: {"tool_name": "open_url", "arguments": {"url": "https://google.com"}}
-
-get_recent_screenshots — Get recent screenshot files.
-  Arguments: none
-  Example: {"tool_name": "get_recent_screenshots", "arguments": {}}
-
-IMPORTANT: If the user asks to do something and you don't know the exact package name, first call list_apps to find it, then use the correct package name.
+TOOLS:
+- get_device_info: battery, storage, RAM, model
+- list_files: search device files
+- toggle_flashlight: {"on": true/false}
+- list_apps: list installed apps
+- launch_app: {"packageName": "com.example"}
+- uninstall_app: {"packageName": "com.example"}
+- search_play_store: {"query": "app name"}
+- open_play_store: {"packageName": "com.example"}
+- vibrate: {"duration": 500}
+- set_volume: {"level": 0.5}
+- copy_to_clipboard: {"text": "content"}
+- read_clipboard: read what was last copied
+- get_public_ip: get IP address
+- check_connectivity: check wifi/network status
+- search_web: {"query": "search term"} — USE THIS for any knowledge question!
+- open_url: {"url": "https://..."}
+- get_recent_screenshots: get recent screenshots
 ''';
   }
 
@@ -273,13 +216,26 @@ IMPORTANT: If the user asks to do something and you don't know the exact package
       _statusController.add('');
       _tokenStreamController.add('\x01'); // done
 
-      // Tool Detection: Markdown block or Raw JSON
+      // ─── Tool Detection: try multiple extraction strategies ───
       String? jsonStr;
+      
+      // Strategy 1: Markdown code block
       final toolBlockMatch = RegExp(r'```json\n?(.*?)\n?```', dotAll: true).firstMatch(responseText);
       if (toolBlockMatch != null) {
         jsonStr = toolBlockMatch.group(1)!.trim();
-      } else if (responseText.startsWith('{') && responseText.endsWith('}')) {
+      }
+      
+      // Strategy 2: Raw JSON (starts and ends with braces)
+      if (jsonStr == null && responseText.startsWith('{') && responseText.endsWith('}')) {
         jsonStr = responseText;
+      }
+      
+      // Strategy 3: JSON embedded in text — find first {...} block
+      if (jsonStr == null) {
+        final embeddedMatch = RegExp(r'\{[^{}]*"tool_name"[^{}]*\}').firstMatch(responseText);
+        if (embeddedMatch != null) {
+          jsonStr = embeddedMatch.group(0)!.trim();
+        }
       }
 
       if (jsonStr != null) {
@@ -305,6 +261,33 @@ IMPORTANT: If the user asks to do something and you don't know the exact package
         }
       }
 
+      // ─── Keyword Fallback: auto-call tool if model didn't produce JSON ───
+      // Only trigger on the ORIGINAL user message (not on the recursive summary prompt)
+      if (previousTps == null && previousEvalTime == null) {
+        final autoTool = _detectToolFromUserMessage(text);
+        if (autoTool != null) {
+          _statusController.add('Running ${autoTool['tool_name']}...');
+          _tokenStreamController.add('\x00');
+          _tokenStreamController.add('Using ${autoTool['tool_name']}...');
+          
+          final toolResult = await _executeTool(
+            autoTool['tool_name'] as String,
+            jsonEncode(autoTool['arguments'] ?? {}),
+          );
+          
+          _messages.add({"role": "assistant", "content": responseText});
+          _messages.add({"role": "system", "content": "Tool result: ${jsonEncode(toolResult)}"});
+          _tokenStreamController.add('\x01');
+
+          return await sendMessage(
+            "Answer the user's original request in ONE short sentence using only the relevant data from the tool result. No preamble.",
+            sessionId,
+            previousTps: tps,
+            previousEvalTime: evalTimeMs / 1000.0,
+          );
+        }
+      }
+
       // If response is still empty, provide fallback
       if (responseText.isEmpty) {
         responseText = "I processed your request but couldn't generate a response. Try rephrasing.";
@@ -316,12 +299,108 @@ IMPORTANT: If the user asks to do something and you don't know the exact package
       return AgentResponse(responseText, "Qwen 2.5", 0,
         tps: previousTps ?? tps, evalTime: previousEvalTime ?? (evalTimeMs / 1000.0));
 
+
     } catch (e) {
       _statusController.add('');
       _tokenStreamController.add('\x01');
       return AgentResponse('Error: $e', 'error', 0);
     }
   }
+
+  /// Keyword-based auto-detection: when the model fails to produce JSON,
+  /// we match the user's original message to automatically call the right tool.
+  Map<String, dynamic>? _detectToolFromUserMessage(String userText) {
+    final msg = userText.toLowerCase().trim();
+
+    // ─── Web Search: any factual/knowledge question the model can't answer ───
+    final searchPatterns = [
+      'who is', 'who are', 'who was', 'what is', 'what are', 'what was',
+      'when is', 'when did', 'where is', 'where are', 'how to', 'how do',
+      'how does', 'how much', 'how many', 'tell me about', 'explain',
+      'define', 'meaning of', 'latest', 'current', 'today', 'news',
+      'capital of', 'president of', 'prime minister', 'chief minister',
+      'cm of', 'cm now', 'weather', 'population', 'price of', 'cost of',
+      'search for', 'search about', 'look up', 'google', 'find out',
+      'download', 'apk',
+    ];
+    for (final p in searchPatterns) {
+      if (msg.contains(p)) {
+        // Use the user's full message as the search query
+        return {'tool_name': 'search_web', 'arguments': {'query': userText}};
+      }
+    }
+
+    // ─── Network / Connectivity ───
+    if (msg.contains('network') || msg.contains('wifi') || msg.contains('internet') ||
+        msg.contains('connection') || msg.contains('connectivity') || msg.contains('signal')) {
+      return {'tool_name': 'check_connectivity', 'arguments': {}};
+    }
+    if (msg.contains('ip address') || msg.contains('my ip') || msg.contains('public ip') || msg.contains('ping')) {
+      return {'tool_name': 'get_public_ip', 'arguments': {}};
+    }
+
+    // ─── Clipboard ───
+    if (msg.contains('clipboard') || msg.contains('copied') || msg.contains('pasted') ||
+        msg.contains('last copy') || msg.contains('last thing i cop') || msg.contains('paste')) {
+      return {'tool_name': 'read_clipboard', 'arguments': {}};
+    }
+
+    // ─── Device Info ───
+    if (msg.contains('battery') || msg.contains('device info') || msg.contains('ram') ||
+        msg.contains('storage') || msg.contains('phone info') || msg.contains('my device') ||
+        msg.contains('my phone')) {
+      return {'tool_name': 'get_device_info', 'arguments': {}};
+    }
+
+    // ─── Flashlight ───
+    if (msg.contains('flashlight') || msg.contains('torch') || msg.contains('flash light')) {
+      final on = !msg.contains('off');
+      return {'tool_name': 'toggle_flashlight', 'arguments': {'on': on}};
+    }
+
+    // ─── Volume ───
+    if (msg.contains('volume')) {
+      final match = RegExp(r'(\d+)').firstMatch(msg);
+      double level = 0.5;
+      if (match != null) {
+        final num = int.tryParse(match.group(1)!) ?? 50;
+        level = (num > 1 ? num / 100.0 : num.toDouble()).clamp(0.0, 1.0);
+      }
+      if (msg.contains('max') || msg.contains('full')) level = 1.0;
+      if (msg.contains('mute') || msg.contains('silent') || msg.contains('zero')) level = 0.0;
+      return {'tool_name': 'set_volume', 'arguments': {'level': level}};
+    }
+
+    // ─── Vibrate ───
+    if (msg.contains('vibrat')) {
+      final match = RegExp(r'(\d+)').firstMatch(msg);
+      int duration = 500;
+      if (match != null) {
+        final val = int.tryParse(match.group(1)!) ?? 500;
+        duration = val < 10 ? val * 1000 : val; // "vibrate for 2 seconds" → 2000
+      }
+      return {'tool_name': 'vibrate', 'arguments': {'duration': duration}};
+    }
+
+    // ─── Screenshots ───
+    if (msg.contains('screenshot')) {
+      return {'tool_name': 'get_recent_screenshots', 'arguments': {}};
+    }
+
+    // ─── Files ───
+    if (msg.contains('files') || msg.contains('documents') || msg.contains('pdf') || msg.contains('apk')) {
+      return {'tool_name': 'list_files', 'arguments': {}};
+    }
+
+    // ─── Apps ───
+    if (msg.contains('installed app') || msg.contains('list app') || msg.contains('my app') ||
+        msg.contains('show app')) {
+      return {'tool_name': 'list_apps', 'arguments': {}};
+    }
+
+    return null; // No match — let the model's response pass through
+  }
+
 
   Future<Map<String, dynamic>> _executeTool(String name, String? argumentsJson) async {
     Map<String, dynamic> args = {};
