@@ -419,6 +419,25 @@ TOOLS:
       }
     }
 
+    // ─── Apps: download/install from Play Store ───
+    if (msg.contains('download') || msg.contains('install') || msg.contains('apk') ||
+        msg.contains('play store') || msg.contains('playstore') || msg.contains('get the app')) {
+      // Extract app name by removing noise words
+      var appName = msg;
+      final noiseWords = [
+        'download', 'install', 'the', 'latest', 'apk', 'app', 'application',
+        'from', 'play', 'store', 'playstore', 'please', 'can', 'you', 'i',
+        'want', 'to', 'need', 'get', 'me', 'for', 'a', 'an',
+      ];
+      for (final w in noiseWords) {
+        appName = appName.replaceAll(RegExp('\\b$w\\b', caseSensitive: false), '');
+      }
+      appName = appName.replaceAll(RegExp(r'\s+'), ' ').trim();
+      if (appName.isNotEmpty) {
+        return {'tool_name': 'search_play_store', 'arguments': {'query': appName}};
+      }
+    }
+
     // ════════════════════════════════════════════════════════════════
     // WEB SEARCH (checked LAST — lowest priority, catch-all)
     // Only for messages that clearly look like a question, not follow-ups
