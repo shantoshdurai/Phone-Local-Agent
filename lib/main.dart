@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:flutter_background/flutter_background.dart';
 import 'screens/home_screen.dart';
 import 'screens/chat_screen.dart';
 import 'services/model_downloader_service.dart';
@@ -8,6 +9,18 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await dotenv.load(fileName: ".env").catchError((_) {});
   
+  try {
+    const androidConfig = FlutterBackgroundAndroidConfig(
+      notificationTitle: "Onyx Intelligence",
+      notificationText: "Background processing active",
+      notificationImportance: AndroidNotificationImportance.Default,
+      notificationIcon: AndroidResource(name: 'ic_launcher', defType: 'mipmap'),
+    );
+    await FlutterBackground.initialize(androidConfig: androidConfig);
+  } catch (e) {
+    print('Failed to initialize background service: $e');
+  }
+
   final downloader = ModelDownloaderService();
   final b15 = await downloader.isModelDownloaded("qwen2.5-1.5b-instruct-q4_k_m.gguf");
   final b05 = await downloader.isModelDownloaded("qwen2.5-0.5b-instruct-q4_k_m.gguf");

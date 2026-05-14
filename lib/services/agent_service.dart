@@ -2,7 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:async';
 import 'package:fllama/fllama.dart';
-import 'package:fllama/fllama_type.dart';
+import 'package:flutter_background/flutter_background.dart';
 import 'model_downloader_service.dart';
 import 'device_service.dart';
 import 'file_service.dart';
@@ -163,7 +163,13 @@ TOOLS:
   Future<AgentResponse> sendMessage(String text, int sessionId, {String? imagePath, double? previousTps, double? previousEvalTime, String? forcedToolName}) async {
     if (_contextId == null) throw Exception('Model not initialized');
     
-    if (forcedToolName == null) {
+    final bool isTopLevel = forcedToolName == null;
+    
+    if (isTopLevel) {
+      try {
+        await FlutterBackground.enableBackgroundExecution();
+      } catch (_) {}
+      
       _statusController.add('Thinking...');
       _messages.add({"role": "user", "content": text});
     }
@@ -237,13 +243,15 @@ TOOLS:
           _messages.add({"role": "assistant", "content": responseText});
           _messages.add({"role": "system", "content": "Tool result: ${jsonEncode(toolResult)}"});
 
-          return await sendMessage(
+          final res = await sendMessage(
             "The user asked: '$text'. The tool '$toolName' returned: ${jsonEncode(toolResult)}. Provide a concise final response.",
             sessionId,
             previousTps: previousTps ?? tps,
             previousEvalTime: previousEvalTime ?? (evalTimeMs / 1000.0),
             forcedToolName: toolName,
           );
+          if (isTopLevel) { try { await FlutterBackground.disableBackgroundExecution(); } catch (_) {} }
+          return res;
         } catch (e) {
           // JSON decode failed or tool execution failed
         }
@@ -264,13 +272,15 @@ TOOLS:
           _messages.add({"role": "assistant", "content": "I'll help you with that."});
           _messages.add({"role": "system", "content": "Tool result: ${jsonEncode(toolResult)}"});
 
-          return await sendMessage(
+          final res = await sendMessage(
             "The user asked: '$text'. I automatically ran '$toolName' which returned: ${jsonEncode(toolResult)}. Tell the user what happened in ONE short sentence.",
             sessionId,
             previousTps: tps,
             previousEvalTime: evalTimeMs / 1000.0,
             forcedToolName: toolName,
           );
+          if (isTopLevel) { try { await FlutterBackground.disableBackgroundExecution(); } catch (_) {} }
+          return res;
         }
       }
 
@@ -281,12 +291,15 @@ TOOLS:
       await _dbService.saveMessage('assistant', responseText, sessionId);
       _messages.add({"role": "assistant", "content": responseText});
 
+      if (isTopLevel) { try { await FlutterBackground.disableBackgroundExecution(); } catch (_) {} }
+
       return AgentResponse(responseText, "Qwen 2.5", 0,
         tps: previousTps ?? tps, evalTime: previousEvalTime ?? (evalTimeMs / 1000.0), toolName: forcedToolName);
 
     } catch (e) {
       _statusController.add('');
       _tokenStreamController.add('\x01');
+      if (isTopLevel) { try { await FlutterBackground.disableBackgroundExecution(); } catch (_) {} }
       return AgentResponse('Error: $e', 'error', 0);
     }
   }
