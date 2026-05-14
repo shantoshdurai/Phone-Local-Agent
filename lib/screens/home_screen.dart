@@ -36,12 +36,12 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   bool _statsLoading = true;
 
   final String _url15B =
-      "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf";
+      "https://huggingface.co/litert-community/Qwen2.5-1.5B-Instruct/resolve/main/Qwen2.5-1.5B-Instruct_multi-prefill-seq_q8_ekv1280.task";
   final String _url05B =
-      "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf";
+      "https://huggingface.co/litert-community/Qwen2.5-0.5B-Instruct/resolve/main/Qwen2.5-0.5B-Instruct_multi-prefill-seq_q8_ekv1280.task";
 
-  final String _file15B = "qwen2.5-1.5b-instruct-q4_k_m.gguf";
-  final String _file05B = "qwen2.5-0.5b-instruct-q4_k_m.gguf";
+  final String _file15B = "qwen2.5-1.5b-instruct-q8.task";
+  final String _file05B = "qwen2.5-0.5b-instruct-q8.task";
 
   // Animations
   late AnimationController _entranceController;
@@ -687,7 +687,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                   tag: 'Primary',
                   description:
                       'Balanced performance and capability. Recommended for most tasks including coding and reasoning.',
-                  size: '~1.2 GB',
+                  size: '~1.6 GB',
                   speed: 'Fast Inference',
                   isDownloaded: _is15BDownloaded,
                   hasPartial: _has15BPartial,
@@ -704,7 +704,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                   tag: 'Lite',
                   description:
                       'Ultra-fast, lightweight model optimized for older hardware or rapid, simple queries.',
-                  size: '~450 MB',
+                  size: '~547 MB',
                   speed: 'Instant',
                   isDownloaded: _is05BDownloaded,
                   hasPartial: _has05BPartial,

@@ -17,7 +17,6 @@ class UtilityService {
       }
       return true;
     } catch (e) {
-      print('Error toggling flashlight: $e');
       return false;
     }
   }
@@ -40,7 +39,6 @@ class UtilityService {
         return jsonDecode(response.body)['ip'];
       }
     } catch (e) {
-      print('Error getting IP: $e');
     }
     return 'Unknown';
   }
@@ -144,7 +142,6 @@ class UtilityService {
     try {
       return await launchUrl(uri, mode: LaunchMode.externalApplication);
     } catch (e) {
-      print('Error opening URL $url: $e');
       return false;
     }
   }

@@ -1,7 +1,6 @@
 import 'package:flutter_contacts/flutter_contacts.dart' hide Event;
 import 'package:device_calendar/device_calendar.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:intl/intl.dart';
 
 class PersonalService {
   final DeviceCalendarPlugin _calendarPlugin = DeviceCalendarPlugin();
@@ -90,7 +89,6 @@ class PersonalService {
         return await launchUrl(webUrl, mode: LaunchMode.externalApplication);
       }
     } catch (e) {
-      print('Error launching WhatsApp: $e');
       return false;
     }
   }

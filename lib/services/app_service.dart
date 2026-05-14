@@ -20,7 +20,6 @@ class AppService {
         'versionCode': app.versionCode,
       }).toList();
     } catch (e) {
-      print('Error getting installed apps: $e');
       return [];
     }
   }
@@ -111,7 +110,6 @@ class AppService {
     try {
       return await InstalledApps.uninstallApp(packageName) ?? false;
     } catch (e) {
-      print('Error triggering uninstall for $packageName: $e');
       return false;
     }
   }
@@ -120,7 +118,6 @@ class AppService {
     try {
       return await InstalledApps.startApp(packageName) ?? false;
     } catch (e) {
-      print('Error launching $packageName: $e');
       return false;
     }
   }
@@ -136,7 +133,6 @@ class AppService {
         return await launchUrl(webUrl, mode: LaunchMode.externalApplication);
       }
     } catch (e) {
-      print('Error opening play store for $packageName: $e');
       return false;
     }
   }
@@ -151,7 +147,6 @@ class AppService {
       }
       return await launchUrl(updatesUrl, mode: LaunchMode.externalApplication);
     } catch (e) {
-      print('Error opening play store updates: $e');
       return false;
     }
   }
@@ -167,7 +162,6 @@ class AppService {
         return await launchUrl(webUrl, mode: LaunchMode.externalApplication);
       }
     } catch (e) {
-      print('Error searching play store for $query: $e');
       return false;
     }
   }

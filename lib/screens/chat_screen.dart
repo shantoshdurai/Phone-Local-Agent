@@ -28,19 +28,17 @@ class _ChatScreenState extends State<ChatScreen> {
   final AgentService _agentService = AgentService();
   final DatabaseService _dbService = DatabaseService();
   final SpeechToText _speechToText = SpeechToText();
-  bool _speechEnabled = false;
-  
   bool _isTyping = false;
   bool _isInitializing = true;
-  String _currentStatus = '';
   int? _currentSessionId;
   List<Map<String, dynamic>> _sessions = [];
   String? _selectedImagePath;
   final ImagePicker _picker = ImagePicker();
-  String _streamingText = '';        // live accumulating text
-  bool _isStreaming = false;         // showing the streaming bubble
+  String _streamingText = '';
+  bool _isStreaming = false;
   StreamSubscription? _tokenSub;
   Timer? _thinkingTimer;
+  late _KeyboardObserver _keyboardObserver;
   int _thinkingMessageIndex = 0;
   final List<String> _thinkingMessages = [
     'Thinking...',
@@ -82,13 +80,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _checkModels();
     _initAgent();
     _initSpeech();
-    _agentService.statusStream.listen((status) {
-      if (mounted) {
-        setState(() {
-          _currentStatus = status;
-        });
-      }
-    });
+    _agentService.statusStream.listen((_) {});
 
     _tokenSub = _agentService.tokenStream.listen((token) {
       if (!mounted) return;
@@ -112,15 +104,14 @@ class _ChatScreenState extends State<ChatScreen> {
       }
     });
 
-    WidgetsBinding.instance.addObserver(_KeyboardObserver(onKeyboardVisible: () {
-      _scrollToBottom();
-    }));
+    _keyboardObserver = _KeyboardObserver(onKeyboardVisible: _scrollToBottom);
+    WidgetsBinding.instance.addObserver(_keyboardObserver);
   }
 
   void _initSpeech() async {
-    _speechEnabled = await _speechToText.initialize(
-      onError: (val) => setState(() {}),
-      onStatus: (val) => setState(() {}),
+    await _speechToText.initialize(
+      onError: (_) => setState(() {}),
+      onStatus: (_) => setState(() {}),
     );
     setState(() {});
   }
@@ -146,8 +137,8 @@ class _ChatScreenState extends State<ChatScreen> {
 
   void _checkModels() async {
     final downloader = ModelDownloaderService();
-    final b15 = await downloader.isModelDownloaded("qwen2.5-1.5b-instruct-q4_k_m.gguf");
-    final b05 = await downloader.isModelDownloaded("qwen2.5-0.5b-instruct-q4_k_m.gguf");
+    final b15 = await downloader.isModelDownloaded("qwen2.5-1.5b-instruct-q8.task");
+    final b05 = await downloader.isModelDownloaded("qwen2.5-0.5b-instruct-q8.task");
     if (mounted) {
       setState(() {
         _is15BAvailable = b15;
@@ -181,6 +172,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _tokenSub?.cancel();
     _textController.dispose();
     _scrollController.dispose();
+    WidgetsBinding.instance.removeObserver(_keyboardObserver);
     super.dispose();
   }
 
@@ -255,7 +247,7 @@ class _ChatScreenState extends State<ChatScreen> {
       }
     });
     _scrollToBottom();
-    Navigator.pop(context);
+    if (mounted) Navigator.pop(context);
   }
 
   Future<void> _pickImage() async {
@@ -373,7 +365,7 @@ class _ChatScreenState extends State<ChatScreen> {
           itemBuilder: (context) => [
             if (_is15BAvailable)
               PopupMenuItem(
-                value: "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+                value: "qwen2.5-1.5b-instruct-q8.task",
                 child: Row(
                   children: [
                     Icon(Icons.memory_rounded, color: widget.modelFileName.contains('1.5b') ? Colors.blueAccent : Colors.white70, size: 20),
@@ -384,7 +376,7 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
             if (_is05BAvailable)
               PopupMenuItem(
-                value: "qwen2.5-0.5b-instruct-q4_k_m.gguf",
+                value: "qwen2.5-0.5b-instruct-q8.task",
                 child: Row(
                   children: [
                     Icon(Icons.bolt_rounded, color: widget.modelFileName.contains('0.5b') ? Colors.blueAccent : Colors.white70, size: 20),
@@ -553,7 +545,7 @@ class _ChatScreenState extends State<ChatScreen> {
             onTap: () async {
               await _dbService.clearChatHistory();
               await _createNewChat();
-              Navigator.pop(context);
+              if (mounted) Navigator.pop(context);
             },
           ),
           const SizedBox(height: 20),
@@ -718,74 +710,3 @@ class _KeyboardObserver extends WidgetsBindingObserver {
   void didChangeMetrics() => onKeyboardVisible();
 }
 
-class _BouncingDots extends StatefulWidget {
-  const _BouncingDots();
-
-  @override
-  State<_BouncingDots> createState() => _BouncingDotsState();
-}
-
-class _BouncingDotsState extends State<_BouncingDots> with TickerProviderStateMixin {
-  late final List<AnimationController> _controllers;
-  late final List<Animation<double>> _animations;
-
-  @override
-  void initState() {
-    super.initState();
-    _controllers = List.generate(3, (i) {
-      return AnimationController(
-        vsync: this,
-        duration: const Duration(milliseconds: 600),
-      );
-    });
-
-    _animations = _controllers.map((c) {
-      return Tween<double>(begin: 0, end: -6).animate(
-        CurvedAnimation(parent: c, curve: Curves.easeInOut),
-      );
-    }).toList();
-
-    // Stagger the animations
-    for (int i = 0; i < 3; i++) {
-      Future.delayed(Duration(milliseconds: i * 180), () {
-        if (mounted) _controllers[i].repeat(reverse: true);
-      });
-    }
-  }
-
-  @override
-  void dispose() {
-    for (final c in _controllers) {
-      c.dispose();
-    }
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: List.generate(3, (i) {
-        return AnimatedBuilder(
-          animation: _animations[i],
-          builder: (context, child) {
-            return Container(
-              margin: const EdgeInsets.symmetric(horizontal: 3),
-              child: Transform.translate(
-                offset: Offset(0, _animations[i].value),
-                child: Container(
-                  width: 8,
-                  height: 8,
-                  decoration: BoxDecoration(
-                    color: Colors.white54,
-                    borderRadius: BorderRadius.circular(4),
-                  ),
-                ),
-              ),
-            );
-          },
-        );
-      }),
-    );
-  }
-}

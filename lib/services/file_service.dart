@@ -87,7 +87,6 @@ class FileService {
             }
           }
         } catch (e) {
-          print('Error indexing path $path: $e');
         }
       }
     }
@@ -101,7 +100,7 @@ class FileService {
       if (await file.exists()) {
         final content = await file.readAsString();
         if (content.length > 2000) {
-          return content.substring(0, 2000) + '... [truncated]';
+          return '${content.substring(0, 2000)}... [truncated]';
         }
         return content;
       }
@@ -120,9 +119,44 @@ class FileService {
       }
       return false;
     } catch (e) {
-      print('Error deleting file: $e');
       return false;
     }
+  }
+
+  Future<List<Map<String, dynamic>>> getRecentScreenshots({int limit = 5}) async {
+    final screenshotDirs = [
+      '/storage/emulated/0/DCIM/Screenshots',
+      '/storage/emulated/0/Pictures/Screenshots',
+    ];
+
+    final List<Map<String, dynamic>> results = [];
+    for (final dirPath in screenshotDirs) {
+      final dir = Directory(dirPath);
+      if (!await dir.exists()) continue;
+      try {
+        final files = dir
+            .listSync()
+            .whereType<File>()
+            .where((f) {
+              final n = f.path.toLowerCase();
+              return n.endsWith('.png') || n.endsWith('.jpg') || n.endsWith('.jpeg');
+            })
+            .toList()
+          ..sort((a, b) => b.statSync().modified.compareTo(a.statSync().modified));
+        for (final file in files) {
+          if (results.length >= limit) break;
+          final stat = file.statSync();
+          results.add({
+            'name': file.path.split('/').last,
+            'path': file.path,
+            'sizeKB': (stat.size / 1024).round(),
+            'modified': stat.modified.toIso8601String(),
+          });
+        }
+      } catch (_) {}
+      if (results.length >= limit) break;
+    }
+    return results;
   }
 
   Future<String> downloadFile(String url, String fileName) async {

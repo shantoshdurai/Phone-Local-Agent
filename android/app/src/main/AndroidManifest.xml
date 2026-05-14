@@ -21,6 +21,9 @@
         android:label="local_agent"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
+        <uses-native-library android:name="libOpenCL.so" android:required="false" />
+        <uses-native-library android:name="libOpenCL-car-adreno.so" android:required="false" />
+        <uses-native-library android:name="libOpenCL-pixel.so" android:required="false" />
         <activity
             android:name=".MainActivity"
             android:exported="true"
