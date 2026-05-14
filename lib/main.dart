@@ -13,7 +13,7 @@ void main() async {
     const androidConfig = FlutterBackgroundAndroidConfig(
       notificationTitle: "Onyx Intelligence",
       notificationText: "Background processing active",
-      notificationImportance: AndroidNotificationImportance.Default,
+      notificationImportance: AndroidNotificationImportance.normal,
       notificationIcon: AndroidResource(name: 'ic_launcher', defType: 'mipmap'),
     );
     await FlutterBackground.initialize(androidConfig: androidConfig);
