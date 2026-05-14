@@ -44,55 +44,107 @@ class ModelDownloaderService {
 
       _cancelToken = CancelToken();
 
-      DateTime lastTime = DateTime.now();
-      int lastBytes = 0;
+      int downloadedBytes = 0;
+      final tempFile = File(tempFilePath);
+      
+      if (await tempFile.exists()) {
+        downloadedBytes = await tempFile.length();
+      }
 
-      await _dio.download(
-        url,
-        tempFilePath,
-        cancelToken: _cancelToken,
-        onReceiveProgress: (received, total) {
-          if (total != -1) {
-            final now = DateTime.now();
-            final difference = now.difference(lastTime).inMilliseconds;
-
-            if (difference > 500 || received == total) {
-              final bytesSinceLast = received - lastBytes;
-              final speedBps = (bytesSinceLast / difference) * 1000;
-              
-              String speedStr;
-              if (speedBps > 1024 * 1024) {
-                speedStr = '${(speedBps / (1024 * 1024)).toStringAsFixed(1)} MB/s';
-              } else if (speedBps > 1024) {
-                speedStr = '${(speedBps / 1024).toStringAsFixed(1)} KB/s';
-              } else {
-                speedStr = '${speedBps.toStringAsFixed(1)} B/s';
-              }
-
-              final downloadedMB = (received / (1024 * 1024)).toStringAsFixed(1);
-              final totalMB = (total / (1024 * 1024)).toStringAsFixed(1);
-              final progress = received / total;
-
-              onProgress(progress, speedStr, '${downloadedMB}MB', '${totalMB}MB');
-
-              lastTime = now;
-              lastBytes = received;
-            }
-          }
-        },
+      Options options = Options(
+        responseType: ResponseType.stream,
+        headers: downloadedBytes > 0 ? {'Range': 'bytes=$downloadedBytes-'} : null,
       );
 
-      // Rename temp file to final file
-      final tempFile = File(tempFilePath);
-      if (await tempFile.exists()) {
-        await tempFile.rename(filePath);
+      DateTime lastTime = DateTime.now();
+      int lastBytes = downloadedBytes;
+
+      final response = await _dio.get<ResponseBody>(
+        url,
+        options: options,
+        cancelToken: _cancelToken,
+      );
+
+      final isPartial = response.statusCode == 206;
+      if (!isPartial && downloadedBytes > 0) {
+        // Server didn't respect range, start over
+        downloadedBytes = 0;
+        await tempFile.delete();
       }
-      onComplete();
+
+      // HuggingFace spaces might return -1 for total size if range is used sometimes, but let's try to get it
+      int totalBytes = -1;
+      final contentLengthHeader = response.headers.value('content-length');
+      if (contentLengthHeader != null) {
+        totalBytes = int.parse(contentLengthHeader) + downloadedBytes;
+      }
+      
+      final file = tempFile.openSync(mode: isPartial ? FileMode.append : FileMode.write);
+      
+      final stream = response.data!.stream;
+      await for (final chunk in stream) {
+        if (_cancelToken?.isCancelled ?? false) {
+           break;
+        }
+        
+        file.writeFromSync(chunk);
+        downloadedBytes += chunk.length;
+
+        if (totalBytes != -1) {
+          final now = DateTime.now();
+          final difference = now.difference(lastTime).inMilliseconds;
+
+          if (difference > 500 || downloadedBytes == totalBytes) {
+            final bytesSinceLast = downloadedBytes - lastBytes;
+            final speedBps = (bytesSinceLast / difference) * 1000;
+            
+            String speedStr;
+            if (speedBps > 1024 * 1024) {
+              speedStr = '${(speedBps / (1024 * 1024)).toStringAsFixed(1)} MB/s';
+            } else if (speedBps > 1024) {
+              speedStr = '${(speedBps / 1024).toStringAsFixed(1)} KB/s';
+            } else {
+              speedStr = '${speedBps.toStringAsFixed(1)} B/s';
+            }
+
+            final downloadedMB = (downloadedBytes / (1024 * 1024)).toStringAsFixed(1);
+            final totalMB = (totalBytes / (1024 * 1024)).toStringAsFixed(1);
+            final progress = downloadedBytes / totalBytes;
+
+            onProgress(progress, speedStr, '${downloadedMB}MB', '${totalMB}MB');
+
+            lastTime = now;
+            lastBytes = downloadedBytes;
+          }
+        }
+      }
+      
+      file.closeSync();
+
+      if (!(_cancelToken?.isCancelled ?? false)) {
+          if (await tempFile.exists()) {
+            await tempFile.rename(filePath);
+          }
+          onComplete();
+      }
     } catch (e) {
-      if (CancelToken.isCancel(e as DioException)) {
-        onError('Download cancelled.');
+      if (e is DioException) {
+         if (CancelToken.isCancel(e)) {
+            onError('Download paused/cancelled.');
+         } else {
+            // Clean up the error message for the UI
+            String errMsg = 'Connection error. Resume to try again.';
+            if (e.type == DioExceptionType.connectionTimeout || e.type == DioExceptionType.receiveTimeout) {
+               errMsg = 'Connection timed out.';
+            } else if (e.type == DioExceptionType.badResponse) {
+               errMsg = 'Server error: ${e.response?.statusCode}';
+            } else if (e.error is SocketException) {
+               errMsg = 'Network connection lost. Resume to try again.';
+            }
+            onError(errMsg);
+         }
       } else {
-        onError('Download failed: $e');
+        onError('An unexpected error occurred.');
       }
     }
   }
@@ -102,6 +154,10 @@ class ModelDownloaderService {
     final file = File('$dir/$fileName');
     if (await file.exists()) {
       await file.delete();
+    }
+    final tempFile = File('$dir/$fileName.part');
+    if (await tempFile.exists()) {
+      await tempFile.delete();
     }
   }
 }

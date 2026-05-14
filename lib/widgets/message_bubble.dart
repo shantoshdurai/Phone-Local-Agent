@@ -120,12 +120,11 @@ class _MessageBubbleState extends State<MessageBubble>
                               ),
                         // Inference stats
                         if (!message.isUser &&
-                            message.tps != null &&
-                            message.evalTime != null)
+                            (message.tps != null || message.toolName != null))
                           Padding(
                             padding: const EdgeInsets.only(top: 12.0),
                             child: Text(
-                              '${message.tps!.toStringAsFixed(1)} TPS • ${message.evalTime!.toStringAsFixed(1)}s • Local AI',
+                              '${message.toolName != null ? 'Tool: ${message.toolName} • ' : ''}${message.tps?.toStringAsFixed(1) ?? '0.0'} TPS • ${message.evalTime?.toStringAsFixed(1) ?? '0.0'}s • Local AI',
                               style: GoogleFonts.inter(
                                   fontSize: 11, color: Colors.white38),
                             ),

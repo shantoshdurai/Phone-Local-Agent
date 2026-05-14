@@ -18,7 +18,8 @@ class AgentResponse {
   final int retryCount;
   final double? tps;
   final double? evalTime;
-  AgentResponse(this.text, this.modelName, this.retryCount, {this.tps, this.evalTime});
+  final String? toolName;
+  AgentResponse(this.text, this.modelName, this.retryCount, {this.tps, this.evalTime, this.toolName});
 }
 
 class AgentService {
@@ -65,9 +66,9 @@ class AgentService {
       _modelPath!,
       emitLoadProgress: false,
       nGpuLayers: 99,     // Offload ALL layers to GPU
-      nCtx: 1024,         // Context window
-      nBatch: 256,        // Larger batch = faster prompt processing
-      nThreads: 4,        // Use 4 CPU threads for non-GPU work
+      nCtx: 2048,         // Context window
+      nBatch: 512,        // Larger batch = faster prompt processing
+      nThreads: 8,        // Use more threads
     );
     if (context != null && context["contextId"] != null) {
       _contextId = double.tryParse(context["contextId"].toString());
@@ -127,6 +128,7 @@ CRITICAL RULES:
 5. For clipboard questions → use read_clipboard. Never guess clipboard contents.
 6. For app actions → first use list_apps to find the package name, then use the app tool.
 7. NEVER say "I can't do that". You have tools for everything.
+8. If the user asks for something you just did (like "turn it on" after you already tried), check the tool results in history before replying.
 
 TOOLS:
 - get_device_info: battery, storage, RAM, model
@@ -158,11 +160,13 @@ TOOLS:
     return sb.toString();
   }
 
-  Future<AgentResponse> sendMessage(String text, int sessionId, {String? imagePath, double? previousTps, double? previousEvalTime}) async {
+  Future<AgentResponse> sendMessage(String text, int sessionId, {String? imagePath, double? previousTps, double? previousEvalTime, String? forcedToolName}) async {
     if (_contextId == null) throw Exception('Model not initialized');
     
-    _statusController.add('Thinking...');
-    _messages.add({"role": "user", "content": text});
+    if (forcedToolName == null) {
+      _statusController.add('Thinking...');
+      _messages.add({"role": "user", "content": text});
+    }
     
     final prompt = _buildChatMLPrompt();
     String fullResponse = '';
@@ -170,8 +174,6 @@ TOOLS:
     int tokenCount = 0;
 
     try {
-      // DON'T send \x00 here - let the bouncing dots show first!
-
       bool streamStarted = false;
       _tokenSubscription?.cancel();
       _tokenSubscription = Fllama.instance()?.onTokenStream?.listen((event) {
@@ -180,7 +182,7 @@ TOOLS:
           if (token == "<|im_end|>" || token.contains("[DONE]")) return;
           if (!streamStarted) {
             streamStarted = true;
-            _tokenStreamController.add('\x00'); // NOW switch from dots to streaming
+            _tokenStreamController.add('\x00'); 
           }
           fullResponse += token;
           tokenCount++;
@@ -193,13 +195,12 @@ TOOLS:
         prompt: prompt,
         emitRealtimeCompletion: true,
         stop: ["<|im_end|>"],
-        temperature: 0.5,
+        temperature: 0.1, // Lower temperature for more consistent tool usage
         nPredict: 256,
       );
 
       await Future.delayed(const Duration(milliseconds: 100));
 
-      // PRIMARY: use stream-collected text; FALLBACK: use completion result
       String responseText = fullResponse.trim();
       if (responseText.isEmpty) {
         responseText = (result?["text"] ?? result?["content"] ?? "").toString().trim();
@@ -216,26 +217,12 @@ TOOLS:
       _statusController.add('');
       _tokenStreamController.add('\x01'); // done
 
-      // ─── Tool Detection: try multiple extraction strategies ───
+      // ─── Tool Detection ───
       String? jsonStr;
       
-      // Strategy 1: Markdown code block
-      final toolBlockMatch = RegExp(r'```json\n?(.*?)\n?```', dotAll: true).firstMatch(responseText);
+      final toolBlockMatch = RegExp(r'\{.*"tool_name".*\}', dotAll: true).firstMatch(responseText);
       if (toolBlockMatch != null) {
-        jsonStr = toolBlockMatch.group(1)!.trim();
-      }
-      
-      // Strategy 2: Raw JSON (starts and ends with braces)
-      if (jsonStr == null && responseText.startsWith('{') && responseText.endsWith('}')) {
-        jsonStr = responseText;
-      }
-      
-      // Strategy 3: JSON embedded in text — find first {...} block
-      if (jsonStr == null) {
-        final embeddedMatch = RegExp(r'\{[^{}]*"tool_name"[^{}]*\}').firstMatch(responseText);
-        if (embeddedMatch != null) {
-          jsonStr = embeddedMatch.group(0)!.trim();
-        }
+        jsonStr = toolBlockMatch.group(0)!.trim();
       }
 
       if (jsonStr != null) {
@@ -251,54 +238,51 @@ TOOLS:
           _messages.add({"role": "system", "content": "Tool result: ${jsonEncode(toolResult)}"});
 
           return await sendMessage(
-            "Answer the user's original request in ONE short sentence using only the relevant data from the tool result. No preamble.",
+            "The user asked: '$text'. The tool '$toolName' returned: ${jsonEncode(toolResult)}. Provide a concise final response.",
             sessionId,
             previousTps: previousTps ?? tps,
             previousEvalTime: previousEvalTime ?? (evalTimeMs / 1000.0),
+            forcedToolName: toolName,
           );
         } catch (e) {
-          return AgentResponse("Tool error: $e", "Qwen 2.5", 0, tps: previousTps ?? tps, evalTime: previousEvalTime ?? (evalTimeMs / 1000.0));
+          // JSON decode failed or tool execution failed
         }
       }
 
-      // ─── Keyword Fallback: auto-call tool if model didn't produce JSON ───
-      // Only trigger on the ORIGINAL user message (not on the recursive summary prompt)
-      if (previousTps == null && previousEvalTime == null) {
+      // ─── Keyword Fallback ───
+      if (previousTps == null && previousEvalTime == null && forcedToolName == null) {
         final autoTool = _detectToolFromUserMessage(text);
         if (autoTool != null) {
-          _statusController.add('Running ${autoTool['tool_name']}...');
-          _tokenStreamController.add('\x00');
-          _tokenStreamController.add('Using ${autoTool['tool_name']}...');
+          final toolName = autoTool['tool_name'] as String;
+          _statusController.add('Running $toolName...');
           
           final toolResult = await _executeTool(
-            autoTool['tool_name'] as String,
+            toolName,
             jsonEncode(autoTool['arguments'] ?? {}),
           );
           
-          _messages.add({"role": "assistant", "content": responseText});
+          _messages.add({"role": "assistant", "content": "I'll help you with that."});
           _messages.add({"role": "system", "content": "Tool result: ${jsonEncode(toolResult)}"});
-          _tokenStreamController.add('\x01');
 
           return await sendMessage(
-            "Answer the user's original request in ONE short sentence using only the relevant data from the tool result. No preamble.",
+            "The user asked: '$text'. I automatically ran '$toolName' which returned: ${jsonEncode(toolResult)}. Tell the user what happened in ONE short sentence.",
             sessionId,
             previousTps: tps,
             previousEvalTime: evalTimeMs / 1000.0,
+            forcedToolName: toolName,
           );
         }
       }
 
-      // If response is still empty, provide fallback
       if (responseText.isEmpty) {
-        responseText = "I processed your request but couldn't generate a response. Try rephrasing.";
+        responseText = "I'm not sure how to help with that. Could you rephrase?";
       }
 
       await _dbService.saveMessage('assistant', responseText, sessionId);
       _messages.add({"role": "assistant", "content": responseText});
 
       return AgentResponse(responseText, "Qwen 2.5", 0,
-        tps: previousTps ?? tps, evalTime: previousEvalTime ?? (evalTimeMs / 1000.0));
-
+        tps: previousTps ?? tps, evalTime: previousEvalTime ?? (evalTimeMs / 1000.0), toolName: forcedToolName);
 
     } catch (e) {
       _statusController.add('');
@@ -307,94 +291,43 @@ TOOLS:
     }
   }
 
-  /// Keyword-based auto-detection: when the model fails to produce JSON,
-  /// we match the user's original message to automatically call the right tool.
-  /// PRIORITY ORDER: specific tools first → generic web search last.
+  /// Keyword-based auto-detection
   Map<String, dynamic>? _detectToolFromUserMessage(String userText) {
     final msg = userText.toLowerCase().trim();
     final wordCount = msg.split(RegExp(r'\s+')).length;
 
-    // Skip very short messages — these are likely conversational follow-ups
-    // ("nah rn who is?", "yeah", "ok", "no") that the model should handle
-    if (wordCount <= 3 && !_hasSpecificToolKeyword(msg)) {
-      return null;
-    }
+    if (wordCount <= 3 && !_hasSpecificToolKeyword(msg)) return null;
 
-    // ════════════════════════════════════════════════════════════════
-    // SPECIFIC TOOL PATTERNS (checked FIRST — highest priority)
-    // ════════════════════════════════════════════════════════════════
-
-    // ─── Clipboard (must be before "what is" search pattern!) ───
-    if (msg.contains('clipboard') || msg.contains('copied') || msg.contains('pasted') ||
-        msg.contains('last copy') || msg.contains('last thing i cop') || msg.contains('paste')) {
+    if (msg.contains('clipboard') || msg.contains('copied') || msg.contains('paste')) {
       return {'tool_name': 'read_clipboard', 'arguments': {}};
     }
-
-    // ─── Network / Connectivity ───
-    if (msg.contains('network') || msg.contains('wifi') || msg.contains('internet') ||
-        msg.contains('connection') || msg.contains('connectivity') || msg.contains('signal') ||
-        msg.contains('ping') || msg.contains('speed test') || msg.contains('network speed')) {
+    if (msg.contains('network') || msg.contains('wifi') || msg.contains('internet')) {
       return {'tool_name': 'check_connectivity', 'arguments': {}};
     }
-    if (msg.contains('ip address') || msg.contains('my ip') || msg.contains('public ip') || msg.contains('ping')) {
-      return {'tool_name': 'get_public_ip', 'arguments': {}};
-    }
-
-    // ─── Device Info ───
-    if (msg.contains('battery') || msg.contains('device info') || msg.contains('ram') ||
-        msg.contains('storage') || msg.contains('phone info') || msg.contains('my device') ||
-        msg.contains('my phone')) {
+    if (msg.contains('battery') || msg.contains('device info') || msg.contains('storage')) {
       return {'tool_name': 'get_device_info', 'arguments': {}};
     }
-
-    // ─── Flashlight ───
-    if (msg.contains('flashlight') || msg.contains('torch') || msg.contains('flash light')) {
+    if (msg.contains('flashlight') || msg.contains('torch')) {
       final on = !msg.contains('off');
       return {'tool_name': 'toggle_flashlight', 'arguments': {'on': on}};
     }
-
-    // ─── Volume ───
-    if (msg.contains('volume')) {
-      final match = RegExp(r'(\d+)').firstMatch(msg);
-      double level = 0.5;
-      if (match != null) {
-        final num = int.tryParse(match.group(1)!) ?? 50;
-        level = (num > 1 ? num / 100.0 : num.toDouble()).clamp(0.0, 1.0);
-      }
-      if (msg.contains('max') || msg.contains('full')) level = 1.0;
-      if (msg.contains('mute') || msg.contains('silent') || msg.contains('zero')) level = 0.0;
-      return {'tool_name': 'set_volume', 'arguments': {'level': level}};
-    }
-
-    // ─── Vibrate ───
     if (msg.contains('vibrat')) {
-      final match = RegExp(r'(\d+)').firstMatch(msg);
-      int duration = 500;
-      if (match != null) {
-        final val = int.tryParse(match.group(1)!) ?? 500;
-        duration = val < 10 ? val * 1000 : val;
-      }
-      return {'tool_name': 'vibrate', 'arguments': {'duration': duration}};
+      return {'tool_name': 'vibrate', 'arguments': {}};
     }
-
-    // ─── Screenshots ───
     if (msg.contains('screenshot')) {
       return {'tool_name': 'get_recent_screenshots', 'arguments': {}};
     }
-
-    // ─── Files ───
-    if (msg.contains('files') || msg.contains('documents') || msg.contains('pdf')) {
+    if (msg.contains('files') || msg.contains('pdf')) {
       return {'tool_name': 'list_files', 'arguments': {}};
     }
-
-    // ─── Apps: list ───
-    if ((msg.contains('list') || msg.contains('show') || msg.contains('what')) && 
-        (msg.contains('app') || msg.contains('application') || msg.contains('package'))) {
-      return {'tool_name': 'list_apps', 'arguments': {}};
+    if (msg.contains('app') || msg.contains('application')) {
+      if (msg.contains('list') || msg.contains('show')) {
+        return {'tool_name': 'list_apps', 'arguments': {}};
+      }
     }
-
+    
     // ─── Apps: launch/open by name ───
-    final launchPatterns = ['launch ', 'open ', 'start ', 'run '];
+    final launchPatterns = ['launch ', 'open ', 'start ', 'run ', 'call '];
     for (final p in launchPatterns) {
       if (msg.contains(p)) {
         final idx = msg.indexOf(p);
@@ -406,105 +339,44 @@ TOOLS:
       }
     }
 
-    // ─── Apps: delete/remove/uninstall by name ───
-    final deletePatterns = ['delete ', 'remove ', 'uninstall '];
-    for (final p in deletePatterns) {
-      if (msg.contains(p)) {
-        final idx = msg.indexOf(p);
-        var appName = msg.substring(idx + p.length).trim();
-        appName = appName.replaceAll(RegExp(r'\s*(app|application|the)\s*$'), '').trim();
-        if (appName.isNotEmpty) {
-          return {'tool_name': 'uninstall_app_by_name', 'arguments': {'appName': appName}};
-        }
-      }
+    // Protect conversational meta-queries from triggering web search
+    final metaQueries = [
+      'what can you do', 'who are you', 'what is your name', 'how are you',
+      'what are the things you can do', 'what are things you can do',
+      'can you tell me what you do', 'what do you do'
+    ];
+    for (final mq in metaQueries) {
+      if (msg.contains(mq)) return null; 
     }
 
-    // ─── Apps: download/install ───
-    if (msg.contains('download') || msg.contains('install') || msg.contains('apk') ||
-        msg.contains('play store') || msg.contains('playstore') || msg.contains('get the app')) {
-      // Extract app name by removing noise words
-      var appName = msg;
-      final noiseWords = [
-        'download', 'install', 'the', 'latest', 'apk', 'app', 'application',
-        'from', 'play', 'store', 'playstore', 'please', 'can', 'you', 'i',
-        'want', 'to', 'need', 'get', 'me', 'for', 'a', 'an', 'browser',
-      ];
-      for (final w in noiseWords) {
-        appName = appName.replaceAll(RegExp('\\b$w\\b', caseSensitive: false), '');
-      }
-      appName = appName.replaceAll(RegExp(r'\s+'), ' ').trim();
-
-      if (appName.isNotEmpty) {
-        // "apk" mentioned → open browser to download APK file
-        // (for third-party apps like ReVanced, modded apps, etc.)
-        if (msg.contains('apk')) {
-          final searchQuery = Uri.encodeComponent('$appName APK download');
-          return {
-            'tool_name': 'open_url',
-            'arguments': {'url': 'https://www.google.com/search?q=$searchQuery'}
-          };
-        }
-        // No "apk" → Play Store (regular installs)
-        return {'tool_name': 'search_play_store', 'arguments': {'query': appName}};
-      }
+    // Catch-all web search
+    if (wordCount >= 4) {
+       final searchKeywords = ['who', 'what', 'when', 'where', 'how', 'why', 'meaning', 'capital', 'weather'];
+       for (final k in searchKeywords) {
+         // Exclude conversational "what" and "why" follow-ups that don't need a search
+         if (msg.startsWith('what i have') || msg.startsWith('why are you')) return null;
+         
+         if (msg.startsWith(k) || msg.contains('search')) return {'tool_name': 'search_web', 'arguments': {'query': userText}};
+       }
     }
 
-    // ════════════════════════════════════════════════════════════════
-    // WEB SEARCH (checked LAST — lowest priority, catch-all)
-    // Only for messages that clearly look like a question, not follow-ups
-    // ════════════════════════════════════════════════════════════════
-    if (wordCount >= 3) {
-      final searchStarters = [
-        'who is', 'who are', 'who was', 'what is', 'what are', 'what was',
-        'when is', 'when did', 'when was', 'where is', 'where are',
-        'how to', 'how do', 'how does', 'how much', 'how many',
-        'tell me about', 'explain', 'define', 'meaning of',
-      ];
-      for (final p in searchStarters) {
-        if (msg.contains(p)) {
-          return {'tool_name': 'search_web', 'arguments': {'query': userText}};
-        }
-      }
-
-      // Topic-specific search keywords (can be anywhere)
-      final topicPatterns = [
-        'capital of', 'president of', 'prime minister', 'chief minister',
-        'cm of', 'weather in', 'population of', 'price of', 'cost of',
-        'search for', 'search about', 'look up', 'google',
-        'find out', 'latest news', 'news about', 'current status of',
-      ];
-      for (final p in topicPatterns) {
-        if (msg.contains(p)) {
-          return {'tool_name': 'search_web', 'arguments': {'query': userText}};
-        }
-      }
-    }
-
-    return null; // No match — let the model's response pass through
+    return null;
   }
 
-  /// Check if the message contains a specific tool keyword even if short
   bool _hasSpecificToolKeyword(String msg) {
-    const specificKeywords = [
-      'clipboard', 'copied', 'paste', 'battery', 'flashlight', 'torch',
-      'volume', 'vibrat', 'screenshot', 'wifi', 'network', 'ping',
-    ];
+    const specificKeywords = ['clipboard', 'battery', 'flashlight', 'vibrate', 'screenshot', 'wifi', 'open', 'launch', 'run', 'start', 'search', 'call'];
     for (final k in specificKeywords) {
       if (msg.contains(k)) return true;
     }
     return false;
   }
 
-
-
   Future<Map<String, dynamic>> _executeTool(String name, String? argumentsJson) async {
     Map<String, dynamic> args = {};
     if (argumentsJson != null && argumentsJson.isNotEmpty) {
       try {
         args = jsonDecode(argumentsJson) as Map<String, dynamic>;
-      } catch (e) {
-        // Handle error
-      }
+      } catch (_) {}
     }
 
     try {
@@ -556,13 +428,6 @@ TOOLS:
           return {'success': success};
         case 'launch_app_by_name':
           return await _appService.launchAppByName(args['appName'] as String);
-        case 'uninstall_app_by_name':
-          final result = await _appService.launchAppByName(args['appName'] as String);
-          if (result['packageName'] != null) {
-            final success = await _appService.uninstallApp(result['packageName'] as String);
-            return {'success': success, 'appName': result['appName'], 'packageName': result['packageName']};
-          }
-          return result;
         case 'get_recent_screenshots':
           final screenshots = await _dbService.searchFiles('screenshot');
           return {'screenshots': screenshots.take(5).toList()};

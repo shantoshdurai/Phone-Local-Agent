@@ -6,6 +6,7 @@ class ChatMessage {
   final int? retryCount;
   final double? tps;
   final double? evalTime;
+  final String? toolName;
 
   ChatMessage({
     required this.text,
@@ -15,5 +16,6 @@ class ChatMessage {
     this.retryCount,
     this.tps,
     this.evalTime,
+    this.toolName,
   });
 }

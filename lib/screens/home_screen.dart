@@ -1,4 +1,5 @@
 
+import 'dart:io';
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -17,9 +18,11 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   final ModelDownloaderService _downloader = ModelDownloaderService();
   final DeviceService _deviceService = DeviceService();
 
-
   bool _is15BDownloaded = false;
   bool _is05BDownloaded = false;
+
+  bool _has15BPartial = false;
+  bool _has05BPartial = false;
 
   bool _isDownloading = false;
   double _downloadProgress = 0.0;
@@ -94,9 +97,16 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   Future<void> _checkModels() async {
     final b15 = await _downloader.isModelDownloaded(_file15B);
     final b05 = await _downloader.isModelDownloaded(_file05B);
+    
+    final dir = await _downloader.getModelsDirectory();
+    final has15Part = await File('$dir/$_file15B.part').exists();
+    final has05Part = await File('$dir/$_file05B.part').exists();
+
     setState(() {
       _is15BDownloaded = b15;
       _is05BDownloaded = b05;
+      _has15BPartial = has15Part && !b15;
+      _has05BPartial = has05Part && !b05;
     });
   }
 
@@ -133,7 +143,11 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       onError: (err) {
         if (mounted) {
           setState(() => _isDownloading = false);
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(err),
+            behavior: SnackBarBehavior.floating,
+          ));
+          _checkModels();
         }
       },
     );
@@ -142,6 +156,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   void _cancelDownload() {
     _downloader.cancelDownload();
     setState(() => _isDownloading = false);
+    _checkModels();
   }
 
   Future<void> _startChat(String modelType) async {
@@ -397,10 +412,18 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     required String size,
     required String speed,
     required bool isDownloaded,
+    required bool hasPartial,
     required String type,
     required bool isPrimary,
   }) {
     final isThisDownloading = _isDownloading && _downloadingModel == type;
+    
+    String btnText = 'Download Model';
+    if (isDownloaded) {
+        btnText = 'Start Chat';
+    } else if (hasPartial) {
+        btnText = 'Resume Download';
+    }
 
     return ClipRRect(
       borderRadius: BorderRadius.circular(16),
@@ -514,7 +537,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                     ),
                     child: Text(
-                      isDownloaded ? 'Start Chat' : 'Download Model',
+                      btnText,
                       style: GoogleFonts.outfit(fontSize: 14, fontWeight: FontWeight.w600),
                     ),
                   ),
@@ -667,6 +690,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                   size: '~1.2 GB',
                   speed: 'Fast Inference',
                   isDownloaded: _is15BDownloaded,
+                  hasPartial: _has15BPartial,
                   type: '1.5B',
                   isPrimary: true,
                 ),
@@ -683,6 +707,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                   size: '~450 MB',
                   speed: 'Instant',
                   isDownloaded: _is05BDownloaded,
+                  hasPartial: _has05BPartial,
                   type: '0.5B',
                   isPrimary: false,
                 ),

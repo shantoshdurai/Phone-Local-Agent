@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:speech_to_text/speech_to_text.dart';
 import '../services/agent_service.dart';
 import '../services/database_service.dart';
 import '../services/model_downloader_service.dart';
@@ -26,6 +27,9 @@ class _ChatScreenState extends State<ChatScreen> {
   final ScrollController _scrollController = ScrollController();
   final AgentService _agentService = AgentService();
   final DatabaseService _dbService = DatabaseService();
+  final SpeechToText _speechToText = SpeechToText();
+  bool _speechEnabled = false;
+  
   bool _isTyping = false;
   bool _isInitializing = true;
   String _currentStatus = '';
@@ -77,6 +81,7 @@ class _ChatScreenState extends State<ChatScreen> {
     super.initState();
     _checkModels();
     _initAgent();
+    _initSpeech();
     _agentService.statusStream.listen((status) {
       if (mounted) {
         setState(() {
@@ -110,6 +115,33 @@ class _ChatScreenState extends State<ChatScreen> {
     WidgetsBinding.instance.addObserver(_KeyboardObserver(onKeyboardVisible: () {
       _scrollToBottom();
     }));
+  }
+
+  void _initSpeech() async {
+    _speechEnabled = await _speechToText.initialize(
+      onError: (val) => setState(() {}),
+      onStatus: (val) => setState(() {}),
+    );
+    setState(() {});
+  }
+
+  void _startListening() async {
+    await _speechToText.listen(
+      onResult: (result) {
+        setState(() {
+          _textController.text = result.recognizedWords;
+          if (result.finalResult && _textController.text.isNotEmpty) {
+             // Optionally auto-submit: _handleSubmitted(_textController.text);
+          }
+        });
+      },
+    );
+    setState(() {});
+  }
+
+  void _stopListening() async {
+    await _speechToText.stop();
+    setState(() {});
   }
 
   void _checkModels() async {
@@ -279,6 +311,7 @@ class _ChatScreenState extends State<ChatScreen> {
             retryCount: response.retryCount,
             tps: response.tps,
             evalTime: response.evalTime,
+            toolName: response.toolName,
           ));
         });
         _scrollToBottom();
@@ -325,7 +358,7 @@ class _ChatScreenState extends State<ChatScreen> {
             mainAxisSize: MainAxisSize.min,
             children: [
               Text(
-                widget.modelFileName.contains('1.5b') ? 'Qwen 1.5B' : 'Qwen 0.5B Lite',
+                'Agent',
                 style: GoogleFonts.outfit(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w600, letterSpacing: -0.5),
               ),
               const SizedBox(width: 4),
@@ -604,7 +637,20 @@ class _ChatScreenState extends State<ChatScreen> {
                             ),
                           ),
                         ),
-                        const Icon(Icons.mic_none_rounded, color: Colors.white70, size: 22),
+                        GestureDetector(
+                          onTap: () {
+                            if (_speechToText.isNotListening) {
+                              _startListening();
+                            } else {
+                              _stopListening();
+                            }
+                          },
+                          child: Icon(
+                            _speechToText.isNotListening ? Icons.mic_none_rounded : Icons.mic_rounded,
+                            color: _speechToText.isNotListening ? Colors.white70 : Colors.blueAccent,
+                            size: 22,
+                          ),
+                        ),
                         const SizedBox(width: 16),
                       ],
                     ),
