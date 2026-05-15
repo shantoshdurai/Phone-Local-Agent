@@ -7,6 +7,10 @@ class ChatMessage {
   final double? tps;
   final double? evalTime;
   final String? toolName;
+  // When true, MessageBubble skips its entrance animation. Used for assistant
+  // messages that just finished streaming so the final render slots into the
+  // same position the streamed text already occupied — no flash, no replay.
+  final bool skipEntrance;
 
   ChatMessage({
     required this.text,
@@ -17,5 +21,6 @@ class ChatMessage {
     this.tps,
     this.evalTime,
     this.toolName,
+    this.skipEntrance = false,
   });
 }

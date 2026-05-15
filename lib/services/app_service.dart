@@ -1,26 +1,47 @@
+import 'package:flutter/services.dart';
 import 'package:installed_apps/installed_apps.dart';
 import 'package:installed_apps/app_info.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 class AppService {
+  static const _platform = MethodChannel('com.localagent/apps');
+
   List<AppInfo>? _cachedApps;
 
+  /// Returns installed apps with code size (in bytes) attached when available.
+  /// Size comes from the native PackageManager method channel — `installed_apps`
+  /// alone doesn't expose it. Apps for which size lookup failed get `sizeBytes: 0`.
   Future<List<Map<String, dynamic>>> getInstalledApps() async {
     try {
-      List<AppInfo> apps = await InstalledApps.getInstalledApps(
+      final apps = await InstalledApps.getInstalledApps(
         excludeSystemApps: false,
         withIcon: false,
       );
       _cachedApps = apps;
-      
-      return apps.map((app) => {
-        'name': app.name,
-        'packageName': app.packageName,
-        'versionName': app.versionName,
-        'versionCode': app.versionCode,
+      final sizes = await _getAppSizes();
+
+      return apps.map((app) {
+        final bytes = sizes[app.packageName] ?? 0;
+        return {
+          'name': app.name,
+          'packageName': app.packageName,
+          'versionName': app.versionName,
+          'versionCode': app.versionCode,
+          'sizeBytes': bytes,
+        };
       }).toList();
     } catch (e) {
       return [];
+    }
+  }
+
+  Future<Map<String, int>> _getAppSizes() async {
+    try {
+      final raw = await _platform.invokeMethod<Map<dynamic, dynamic>>('getAppSizes');
+      if (raw == null) return {};
+      return raw.map((k, v) => MapEntry(k as String, (v as num).toInt()));
+    } catch (_) {
+      return {};
     }
   }
 

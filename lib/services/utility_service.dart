@@ -22,7 +22,7 @@ class UtilityService {
   }
 
   Future<void> vibrate({int duration = 500}) async {
-    if (await Vibration.hasVibrator() ?? false) {
+    if (await Vibration.hasVibrator()) {
       Vibration.vibrate(duration: duration);
     }
   }

@@ -19,8 +19,7 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
 
   Map<String, dynamic> _stats = {};
   bool _statsLoading = true;
-  bool _is15BDownloaded = false;
-  bool _is05BDownloaded = false;
+  bool _isModelDownloaded = false;
 
   late AnimationController _entranceController;
   late List<Animation<double>> _fadeAnims;
@@ -62,14 +61,12 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
 
   Future<void> _loadData() async {
     final stats = await _deviceService.getQuickStats();
-    final b15 = await _downloader.isModelDownloaded("qwen2.5-1.5b-instruct-q4_k_m.gguf");
-    final b05 = await _downloader.isModelDownloaded("qwen2.5-0.5b-instruct-q4_k_m.gguf");
+    final modelReady = await _downloader.isModelDownloaded("gemma-4-E2B-it.litertlm");
     if (mounted) {
       setState(() {
         _stats = stats;
         _statsLoading = false;
-        _is15BDownloaded = b15;
-        _is05BDownloaded = b05;
+        _isModelDownloaded = modelReady;
       });
     }
   }
@@ -147,17 +144,10 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
           ),
           const SizedBox(height: 18),
           _modelRow(
-            'Qwen 2.5 - 1.5B',
+            'Gemma 4 E2B',
             'Primary',
-            '~1.2 GB',
-            _is15BDownloaded,
-          ),
-          Divider(color: Colors.white.withValues(alpha: 0.06), height: 24),
-          _modelRow(
-            'Qwen 2.5 - 0.5B',
-            'Lite',
-            '~450 MB',
-            _is05BDownloaded,
+            '~2.59 GB',
+            _isModelDownloaded,
           ),
           const SizedBox(height: 16),
           SizedBox(
@@ -327,8 +317,7 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
 
     double usedFraction = 0;
     double modelUsageGB = 0;
-    if (_is15BDownloaded) modelUsageGB += 1.2;
-    if (_is05BDownloaded) modelUsageGB += 0.45;
+    if (_isModelDownloaded) modelUsageGB += 2.59;
 
     if (totalMB != null && freeMB != null) {
       usedFraction = 1.0 - (freeMB / totalMB);
@@ -436,12 +425,12 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
           ),
           const SizedBox(height: 18),
           _aboutRow('App Version', '1.0.0'),
-          _aboutRow('Engine', 'fllama (GGUF)'),
-          _aboutRow('Models', 'Qwen 2.5 Series'),
+          _aboutRow('Engine', 'LiteRT-LM (GPU)'),
+          _aboutRow('Model', 'Gemma 4 E2B'),
           Padding(
             padding: const EdgeInsets.only(top: 4),
             child: Text(
-              'Powered by Qwen 2.5 · 100% On-Device',
+              'Powered by Gemma 4 · 100% On-Device',
               style: GoogleFonts.outfit(color: Colors.white24, fontSize: 11),
             ),
           ),

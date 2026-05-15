@@ -27,16 +27,19 @@ class _MessageBubbleState extends State<MessageBubble>
     super.initState();
     _controller = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 600),
+      duration: const Duration(milliseconds: 280),
+      value: widget.message.skipEntrance ? 1.0 : 0.0,
     );
     _opacity = Tween<double>(begin: 0.0, end: 1.0).animate(
       CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic),
     );
-    _slide = Tween<Offset>(begin: const Offset(0, 0.3), end: Offset.zero)
+    _slide = Tween<Offset>(begin: const Offset(0, 0.15), end: Offset.zero)
         .animate(
       CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic),
     );
-    _controller.forward();
+    if (!widget.message.skipEntrance) {
+      _controller.forward();
+    }
   }
 
   @override

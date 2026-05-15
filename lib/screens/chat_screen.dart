@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
@@ -11,6 +12,7 @@ import '../models/chat_message.dart';
 import '../widgets/message_bubble.dart';
 import '../widgets/suggestions_list.dart';
 import 'settings_screen.dart';
+import 'voice_mode_screen.dart';
 
 
 class ChatScreen extends StatefulWidget {
@@ -34,12 +36,15 @@ class _ChatScreenState extends State<ChatScreen> {
   List<Map<String, dynamic>> _sessions = [];
   String? _selectedImagePath;
   final ImagePicker _picker = ImagePicker();
-  String _streamingText = '';
-  bool _isStreaming = false;
+  // Streaming text lives in a ValueNotifier so per-token updates rebuild only
+  // the streaming bubble, not the entire ListView. Same for the thinking
+  // indicator's rotating label — both were causing visible jank.
+  final ValueNotifier<String> _streamingText = ValueNotifier<String>('');
+  final ValueNotifier<bool> _isStreaming = ValueNotifier<bool>(false);
+  final ValueNotifier<int> _thinkingIndex = ValueNotifier<int>(0);
   StreamSubscription? _tokenSub;
   Timer? _thinkingTimer;
   late _KeyboardObserver _keyboardObserver;
-  int _thinkingMessageIndex = 0;
   final List<String> _thinkingMessages = [
     'Thinking...',
     'Cooking up a response...',
@@ -71,8 +76,7 @@ class _ChatScreenState extends State<ChatScreen> {
     {'text': 'Show my device public IP address', 'icon': Icons.public_rounded},
   ];
   List<Map<String, dynamic>> _currentSuggestions = [];
-  bool _is15BAvailable = false;
-  bool _is05BAvailable = false;
+  bool _isModelAvailable = false;
 
   @override
   void initState() {
@@ -85,21 +89,19 @@ class _ChatScreenState extends State<ChatScreen> {
     _tokenSub = _agentService.tokenStream.listen((token) {
       if (!mounted) return;
       if (token == '\x00') {
-        // Start: show empty streaming bubble
-        setState(() {
-          _isStreaming = true;
-          _streamingText = '';
-        });
+        _streamingText.value = '';
+        _isStreaming.value = true;
       } else if (token == '\x01') {
-        // Done streaming, bubble will be replaced by the final ChatMessage
-        setState(() {
-          _isStreaming = false;
-          _streamingText = '';
-        });
+        // Clean end-of-response: leave text in place so the final ChatMessage
+        // slots in without a one-frame gap.
+        _isStreaming.value = false;
+      } else if (token == '\x02') {
+        // Stream cancelled (tool call interrupted) — clear immediately so the
+        // partial JSON-ish output doesn't linger while the tool runs.
+        _isStreaming.value = false;
+        _streamingText.value = '';
       } else {
-        setState(() {
-          _streamingText += token;
-        });
+        _streamingText.value = _streamingText.value + token;
         _scrollToBottom();
       }
     });
@@ -137,27 +139,24 @@ class _ChatScreenState extends State<ChatScreen> {
 
   void _checkModels() async {
     final downloader = ModelDownloaderService();
-    final b15 = await downloader.isModelDownloaded("qwen2.5-1.5b-instruct-q8.task");
-    final b05 = await downloader.isModelDownloaded("qwen2.5-0.5b-instruct-q8.task");
+    final available = await downloader.isModelDownloaded("gemma-4-E2B-it.litertlm");
     if (mounted) {
       setState(() {
-        _is15BAvailable = b15;
-        _is05BAvailable = b05;
+        _isModelAvailable = available;
       });
     }
   }
 
   void _startThinkingAnimation() {
     _thinkingTimer?.cancel();
-    _thinkingMessageIndex = 0;
+    _thinkingIndex.value = 0;
     _thinkingTimer = Timer.periodic(const Duration(seconds: 3), (timer) {
-      if (mounted && _isTyping && !_isStreaming) {
-        setState(() {
-          _thinkingMessageIndex = (_thinkingMessageIndex + 1) % _thinkingMessages.length;
-        });
-      } else if (!_isTyping || _isStreaming) {
+      if (!mounted || !_isTyping || _isStreaming.value) {
         _stopThinkingAnimation();
+        return;
       }
+      _thinkingIndex.value =
+          (_thinkingIndex.value + 1) % _thinkingMessages.length;
     });
   }
 
@@ -172,6 +171,9 @@ class _ChatScreenState extends State<ChatScreen> {
     _tokenSub?.cancel();
     _textController.dispose();
     _scrollController.dispose();
+    _streamingText.dispose();
+    _isStreaming.dispose();
+    _thinkingIndex.dispose();
     WidgetsBinding.instance.removeObserver(_keyboardObserver);
     super.dispose();
   }
@@ -294,18 +296,24 @@ class _ChatScreenState extends State<ChatScreen> {
 
       final response = await _agentService.sendMessage(text, _currentSessionId!, imagePath: imagePath);
       if (mounted) {
+        // The text bubble that just streamed should slot into the same spot
+        // without replaying its entrance animation — that swap is what looked
+        // like a "full animation glitch at the end".
+        final hadStreamed = _streamingText.value.isNotEmpty;
         setState(() {
           _isTyping = false;
           _messages.add(ChatMessage(
-            text: response.text, 
+            text: response.text,
             isUser: false,
             modelName: response.modelName,
             retryCount: response.retryCount,
             tps: response.tps,
             evalTime: response.evalTime,
             toolName: response.toolName,
+            skipEntrance: hadStreamed,
           ));
         });
+        _streamingText.value = '';
         _scrollToBottom();
       }
     } catch (e) {
@@ -317,6 +325,34 @@ class _ChatScreenState extends State<ChatScreen> {
         _scrollToBottom();
       }
     }
+  }
+
+  Future<void> _openVoiceMode() async {
+    if (_currentSessionId == null) return;
+    // Voice mode shares the current chat session, so when the user closes it
+    // their voice turns appear in the regular chat list when they return.
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => VoiceModeScreen(sessionId: _currentSessionId!),
+        fullscreenDialog: true,
+      ),
+    );
+    // After voice mode, refresh the chat by reloading the session — the
+    // agent's chat history already has the new turns; we just need the UI to
+    // show them.
+    if (!mounted || _currentSessionId == null) return;
+    final history = await _dbService.getChatHistory(_currentSessionId!);
+    setState(() {
+      _messages.clear();
+      for (var msg in history) {
+        _messages.add(ChatMessage(
+          text: msg['content'] as String,
+          isUser: (msg['role'] as String) == 'user',
+        ));
+      }
+    });
+    _scrollToBottom();
   }
 
   void _scrollToBottom() {
@@ -363,25 +399,14 @@ class _ChatScreenState extends State<ChatScreen> {
             }
           },
           itemBuilder: (context) => [
-            if (_is15BAvailable)
-              PopupMenuItem(
-                value: "qwen2.5-1.5b-instruct-q8.task",
+            if (_isModelAvailable)
+              const PopupMenuItem(
+                value: "gemma-4-E2B-it.litertlm",
                 child: Row(
                   children: [
-                    Icon(Icons.memory_rounded, color: widget.modelFileName.contains('1.5b') ? Colors.blueAccent : Colors.white70, size: 20),
-                    const SizedBox(width: 12),
-                    Text('Qwen 1.5B', style: TextStyle(color: widget.modelFileName.contains('1.5b') ? Colors.blueAccent : Colors.white, fontWeight: FontWeight.w500)),
-                  ],
-                ),
-              ),
-            if (_is05BAvailable)
-              PopupMenuItem(
-                value: "qwen2.5-0.5b-instruct-q8.task",
-                child: Row(
-                  children: [
-                    Icon(Icons.bolt_rounded, color: widget.modelFileName.contains('0.5b') ? Colors.blueAccent : Colors.white70, size: 20),
-                    const SizedBox(width: 12),
-                    Text('Qwen 0.5B Lite', style: TextStyle(color: widget.modelFileName.contains('0.5b') ? Colors.blueAccent : Colors.white, fontWeight: FontWeight.w500)),
+                    Icon(Icons.auto_awesome_rounded, color: Colors.blueAccent, size: 20),
+                    SizedBox(width: 12),
+                    Text('Gemma 4 E2B', style: TextStyle(color: Colors.blueAccent, fontWeight: FontWeight.w500)),
                   ],
                 ),
               ),
@@ -408,7 +433,7 @@ class _ChatScreenState extends State<ChatScreen> {
         children: [
           Expanded(
             child: _isInitializing
-                ? const Center(child: CircularProgressIndicator(color: Colors.white))
+                ? const _LoadingScreen()
                 : Column(
                     children: [
                       Expanded(
@@ -417,50 +442,12 @@ class _ChatScreenState extends State<ChatScreen> {
                           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                           itemCount: _messages.length + (_isTyping ? 1 : 0),
                           itemBuilder: (context, index) {
-                            // Show thinking indicator as the last item in the list
                             if (index == _messages.length && _isTyping) {
-                              if (_isStreaming && _streamingText.isNotEmpty) {
-                                return Padding(
-                                  padding: const EdgeInsets.symmetric(vertical: 8.0),
-                                  child: Row(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      const Padding(
-                                        padding: EdgeInsets.only(right: 12.0, top: 4),
-                                        child: Icon(Icons.auto_awesome_rounded, size: 20, color: Colors.white),
-                                      ),
-                                      Flexible(
-                                        child: Text(
-                                          _streamingText,
-                                          style: GoogleFonts.outfit(fontSize: 17, color: Colors.white, height: 1.5),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                );
-                              }
-                              return Padding(
-                                padding: const EdgeInsets.only(left: 4, top: 8, bottom: 8),
-                                child: Row(
-                                  children: [
-                                    SizedBox(
-                                      width: 12, height: 12,
-                                      child: CircularProgressIndicator(
-                                        strokeWidth: 1.5,
-                                        color: Colors.white.withValues(alpha: 0.3),
-                                      ),
-                                    ),
-                                    const SizedBox(width: 10),
-                                    Text(
-                                      _thinkingMessages[_thinkingMessageIndex],
-                                      style: GoogleFonts.outfit(
-                                        fontSize: 13,
-                                        color: Colors.white.withValues(alpha: 0.4),
-                                        fontStyle: FontStyle.italic,
-                                      ),
-                                    ),
-                                  ],
-                                ),
+                              return _TypingIndicator(
+                                streamingText: _streamingText,
+                                isStreaming: _isStreaming,
+                                thinkingIndex: _thinkingIndex,
+                                thinkingMessages: _thinkingMessages,
                               );
                             }
                             return MessageBubble(message: _messages[index]);
@@ -671,8 +658,10 @@ class _ChatScreenState extends State<ChatScreen> {
                       onTap: () {
                         if (_isTyping) {
                           setState(() => _isTyping = false);
-                        } else {
+                        } else if (hasText) {
                           _handleSubmitted(_textController.text);
+                        } else {
+                          _openVoiceMode();
                         }
                       },
                       child: AnimatedSwitcher(
@@ -708,5 +697,148 @@ class _KeyboardObserver extends WidgetsBindingObserver {
   _KeyboardObserver({required this.onKeyboardVisible});
   @override
   void didChangeMetrics() => onKeyboardVisible();
+}
+
+/// Last item in the chat list while the agent is working.
+///
+/// Subscribes only to the three ValueNotifiers it needs — token updates and
+/// the rotating "Thinking..." label don't rebuild the parent ListView.
+class _TypingIndicator extends StatelessWidget {
+  final ValueListenable<String> streamingText;
+  final ValueListenable<bool> isStreaming;
+  final ValueListenable<int> thinkingIndex;
+  final List<String> thinkingMessages;
+
+  const _TypingIndicator({
+    required this.streamingText,
+    required this.isStreaming,
+    required this.thinkingIndex,
+    required this.thinkingMessages,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<bool>(
+      valueListenable: isStreaming,
+      builder: (context, streaming, _) {
+        return ValueListenableBuilder<String>(
+          valueListenable: streamingText,
+          builder: (context, text, __) {
+            if (text.isNotEmpty) {
+              return Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8.0),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Padding(
+                      padding: EdgeInsets.only(right: 12.0, top: 4),
+                      child: Icon(Icons.auto_awesome_rounded,
+                          size: 20, color: Colors.white),
+                    ),
+                    Flexible(
+                      child: Text(
+                        text,
+                        style: GoogleFonts.outfit(
+                            fontSize: 17, color: Colors.white, height: 1.5),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }
+            return Padding(
+              padding: const EdgeInsets.only(left: 4, top: 8, bottom: 8),
+              child: ValueListenableBuilder<int>(
+                valueListenable: thinkingIndex,
+                builder: (context, idx, _) => Row(
+                  children: [
+                    SizedBox(
+                      width: 12,
+                      height: 12,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 1.5,
+                        color: Colors.white.withValues(alpha: 0.3),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Text(
+                      thinkingMessages[idx],
+                      style: GoogleFonts.outfit(
+                        fontSize: 13,
+                        color: Colors.white.withValues(alpha: 0.4),
+                        fontStyle: FontStyle.italic,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+}
+
+/// Loading state shown while the model is being mapped into memory on the
+/// first chat open (or after Android killed the process while backgrounded).
+class _LoadingScreen extends StatelessWidget {
+  const _LoadingScreen();
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 64,
+            height: 64,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              gradient: LinearGradient(
+                colors: [
+                  const Color(0xFF3B82F6).withValues(alpha: 0.25),
+                  const Color(0xFF8B5CF6).withValues(alpha: 0.15),
+                ],
+              ),
+              border: Border.all(
+                  color: const Color(0xFF3B82F6).withValues(alpha: 0.4)),
+            ),
+            child: const Center(
+              child: Icon(Icons.auto_awesome_rounded,
+                  color: Colors.white, size: 28),
+            ),
+          ),
+          const SizedBox(height: 22),
+          SizedBox(
+            width: 18,
+            height: 18,
+            child: CircularProgressIndicator(
+              strokeWidth: 1.6,
+              color: Colors.white.withValues(alpha: 0.4),
+            ),
+          ),
+          const SizedBox(height: 16),
+          Text(
+            'Loading model...',
+            style: GoogleFonts.outfit(
+              color: Colors.white70,
+              fontSize: 14,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'First open can take a few seconds',
+            style: GoogleFonts.outfit(
+              color: Colors.white.withValues(alpha: 0.35),
+              fontSize: 12,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 

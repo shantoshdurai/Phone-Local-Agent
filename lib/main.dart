@@ -7,6 +7,7 @@ import 'screens/onboarding_screen.dart';
 import 'services/model_downloader_service.dart';
 
 const _kOnboardingSeenKey = 'onboarding_seen_v1';
+const String kGemmaModelFile = 'gemma-4-E2B-it.litertlm';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -20,18 +21,10 @@ void main() async {
   final onboardingSeen = prefs.getBool(_kOnboardingSeenKey) ?? false;
 
   final downloader = ModelDownloaderService();
-  final b15 = await downloader.isModelDownloaded("qwen2.5-1.5b-instruct-q8.task");
-  final b05 = await downloader.isModelDownloaded("qwen2.5-0.5b-instruct-q8.task");
-
-  String? initialModel;
-  if (b15) {
-    initialModel = "qwen2.5-1.5b-instruct-q8.task";
-  } else if (b05) {
-    initialModel = "qwen2.5-0.5b-instruct-q8.task";
-  }
+  final modelReady = await downloader.isModelDownloaded(kGemmaModelFile);
 
   runApp(MyApp(
-    initialModel: initialModel,
+    initialModel: modelReady ? kGemmaModelFile : null,
     showOnboarding: !onboardingSeen,
   ));
 }

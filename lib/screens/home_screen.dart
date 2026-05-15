@@ -18,30 +18,23 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   final ModelDownloaderService _downloader = ModelDownloaderService();
   final DeviceService _deviceService = DeviceService();
 
-  bool _is15BDownloaded = false;
-  bool _is05BDownloaded = false;
-
-  bool _has15BPartial = false;
-  bool _has05BPartial = false;
+  bool _isModelDownloaded = false;
+  bool _hasModelPartial = false;
 
   bool _isDownloading = false;
   double _downloadProgress = 0.0;
   String _downloadSpeed = '';
   String _downloadedStr = '';
   String _totalStr = '';
-  String _downloadingModel = '';
 
   // Device stats
   Map<String, dynamic> _stats = {};
   bool _statsLoading = true;
 
-  final String _url15B =
-      "https://huggingface.co/litert-community/Qwen2.5-1.5B-Instruct/resolve/main/Qwen2.5-1.5B-Instruct_multi-prefill-seq_q8_ekv1280.task";
-  final String _url05B =
-      "https://huggingface.co/litert-community/Qwen2.5-0.5B-Instruct/resolve/main/Qwen2.5-0.5B-Instruct_multi-prefill-seq_q8_ekv1280.task";
+  static const String _modelUrl =
+      "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm";
 
-  final String _file15B = "qwen2.5-1.5b-instruct-q8.task";
-  final String _file05B = "qwen2.5-0.5b-instruct-q8.task";
+  static const String _modelFile = "gemma-4-E2B-it.litertlm";
 
   // Animations
   late AnimationController _entranceController;
@@ -59,15 +52,15 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       duration: const Duration(milliseconds: 1200),
     );
 
-    // 5 sections: badge, title, performance, model1, model2
-    _fadeAnims = List.generate(5, (i) {
+    // 4 sections: badge, title, performance, model
+    _fadeAnims = List.generate(4, (i) {
       final start = i * 0.15;
       final end = (start + 0.4).clamp(0.0, 1.0);
       return Tween<double>(begin: 0.0, end: 1.0).animate(
         CurvedAnimation(parent: _entranceController, curve: Interval(start, end, curve: Curves.easeOut)),
       );
     });
-    _slideAnims = List.generate(5, (i) {
+    _slideAnims = List.generate(4, (i) {
       final start = i * 0.15;
       final end = (start + 0.4).clamp(0.0, 1.0);
       return Tween<Offset>(begin: const Offset(0, 0.15), end: Offset.zero).animate(
@@ -95,35 +88,26 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   }
 
   Future<void> _checkModels() async {
-    final b15 = await _downloader.isModelDownloaded(_file15B);
-    final b05 = await _downloader.isModelDownloaded(_file05B);
-    
+    final downloaded = await _downloader.isModelDownloaded(_modelFile);
     final dir = await _downloader.getModelsDirectory();
-    final has15Part = await File('$dir/$_file15B.part').exists();
-    final has05Part = await File('$dir/$_file05B.part').exists();
+    final hasPart = await File('$dir/$_modelFile.part').exists();
 
     setState(() {
-      _is15BDownloaded = b15;
-      _is05BDownloaded = b05;
-      _has15BPartial = has15Part && !b15;
-      _has05BPartial = has05Part && !b05;
+      _isModelDownloaded = downloaded;
+      _hasModelPartial = hasPart && !downloaded;
     });
   }
 
-  void _startDownload(String modelType) {
+  void _startDownload() {
     setState(() {
       _isDownloading = true;
       _downloadProgress = 0.0;
       _downloadSpeed = 'Starting...';
-      _downloadingModel = modelType;
     });
 
-    final url = modelType == '1.5B' ? _url15B : _url05B;
-    final file = modelType == '1.5B' ? _file15B : _file05B;
-
     _downloader.downloadModel(
-      url: url,
-      fileName: file,
+      url: _modelUrl,
+      fileName: _modelFile,
       onProgress: (progress, speed, downloaded, total) {
         if (mounted) {
           setState(() {
@@ -159,11 +143,10 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     _checkModels();
   }
 
-  Future<void> _startChat(String modelType) async {
-    final fileName = modelType == '1.5B' ? _file15B : _file05B;
+  Future<void> _startChat() async {
     Navigator.pushAndRemoveUntil(
       context,
-      MaterialPageRoute(builder: (context) => ChatScreen(modelFileName: fileName)),
+      MaterialPageRoute(builder: (context) => ChatScreen(modelFileName: _modelFile)),
       (route) => false,
     );
   }
@@ -413,11 +396,8 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     required String speed,
     required bool isDownloaded,
     required bool hasPartial,
-    required String type,
     required bool isPrimary,
   }) {
-    final isThisDownloading = _isDownloading && _downloadingModel == type;
-    
     String btnText = 'Download Model';
     if (isDownloaded) {
         btnText = 'Start Chat';
@@ -510,7 +490,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
               ),
               const SizedBox(height: 18),
               // Download progress or action button
-              if (isThisDownloading)
+              if (_isDownloading)
                 _buildDownloadProgress()
               else
                 SizedBox(
@@ -521,9 +501,9 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                         ? null
                         : () {
                             if (isDownloaded) {
-                              _startChat(type);
+                              _startChat();
                             } else {
-                              _startDownload(type);
+                              _startDownload();
                             }
                           },
                     style: ElevatedButton.styleFrom(
@@ -679,37 +659,21 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                 ),
               ),
 
-              // Model cards
+              // Model card
               _animatedSection(
                 3,
                 _buildModelCard(
-                  name: 'Qwen 2.5 - 1.5B',
+                  name: 'Gemma 4 E2B',
                   tag: 'Primary',
                   description:
-                      'Balanced performance and capability. Recommended for most tasks including coding and reasoning.',
-                  size: '~1.6 GB',
-                  speed: 'Fast Inference',
-                  isDownloaded: _is15BDownloaded,
-                  hasPartial: _has15BPartial,
-                  type: '1.5B',
+                      "Google's edge-optimized 2B model with native function calling. "
+                      "Handles real reasoning and multi-turn conversation — "
+                      "not just keyword matching.",
+                  size: '~2.59 GB',
+                  speed: 'GPU Accelerated',
+                  isDownloaded: _isModelDownloaded,
+                  hasPartial: _hasModelPartial,
                   isPrimary: true,
-                ),
-              ),
-              const SizedBox(height: 14),
-
-              _animatedSection(
-                4,
-                _buildModelCard(
-                  name: 'Qwen 2.5 - 0.5B',
-                  tag: 'Lite',
-                  description:
-                      'Ultra-fast, lightweight model optimized for older hardware or rapid, simple queries.',
-                  size: '~547 MB',
-                  speed: 'Instant',
-                  isDownloaded: _is05BDownloaded,
-                  hasPartial: _has05BPartial,
-                  type: '0.5B',
-                  isPrimary: false,
                 ),
               ),
 
