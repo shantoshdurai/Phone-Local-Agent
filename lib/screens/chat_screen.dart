@@ -4,14 +4,18 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 import '../services/agent_service.dart';
 import '../services/database_service.dart';
 import '../services/model_downloader_service.dart';
+import '../services/model_registry.dart';
 import '../models/chat_message.dart';
 import '../widgets/message_bubble.dart';
 import '../widgets/suggestions_list.dart';
+import 'home_screen.dart';
 import 'settings_screen.dart';
+import 'splash_screen.dart';
 import 'voice_mode_screen.dart';
 
 
@@ -44,6 +48,10 @@ class _ChatScreenState extends State<ChatScreen> {
   final ValueNotifier<int> _thinkingIndex = ValueNotifier<int>(0);
   StreamSubscription? _tokenSub;
   Timer? _thinkingTimer;
+  // Token streams arrive faster than the UI needs to animate-scroll.
+  // We coalesce scroll requests into one per frame to keep the list smooth
+  // on entry-tier GPUs.
+  bool _scrollPending = false;
   late _KeyboardObserver _keyboardObserver;
   final List<String> _thinkingMessages = [
     'Thinking...',
@@ -76,14 +84,22 @@ class _ChatScreenState extends State<ChatScreen> {
     {'text': 'Show my device public IP address', 'icon': Icons.public_rounded},
   ];
   List<Map<String, dynamic>> _currentSuggestions = [];
-  bool _isModelAvailable = false;
+  // Models the user has on disk right now — drives the agent picker.
+  final Map<String, bool> _installedModels = {};
+  ModelSpec get _currentSpec => ModelRegistry.byFileName(widget.modelFileName);
 
   @override
   void initState() {
     super.initState();
-    _checkModels();
-    _initAgent();
-    _initSpeech();
+    // Defer all heavy init past the first frame so the loading screen paints
+    // before native FlutterGemma / MediaPipe init starts hogging the platform
+    // thread. Speech is lazy — only initialised the first time the mic is
+    // tapped, since it spins up a separate Android service.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _initAgent();
+      _checkModels();
+    });
     _agentService.statusStream.listen((_) {});
 
     _tokenSub = _agentService.tokenStream.listen((token) {
@@ -102,7 +118,7 @@ class _ChatScreenState extends State<ChatScreen> {
         _streamingText.value = '';
       } else {
         _streamingText.value = _streamingText.value + token;
-        _scrollToBottom();
+        _requestStreamScroll();
       }
     });
 
@@ -110,15 +126,23 @@ class _ChatScreenState extends State<ChatScreen> {
     WidgetsBinding.instance.addObserver(_keyboardObserver);
   }
 
-  void _initSpeech() async {
-    await _speechToText.initialize(
+  bool _speechReady = false;
+
+  /// Initialise the platform speech recogniser the first time it's needed.
+  /// Pulled out of initState because the native handshake stalled the UI
+  /// thread on cold launch.
+  Future<bool> _ensureSpeechReady() async {
+    if (_speechReady) return true;
+    _speechReady = await _speechToText.initialize(
       onError: (_) => setState(() {}),
       onStatus: (_) => setState(() {}),
     );
-    setState(() {});
+    if (mounted) setState(() {});
+    return _speechReady;
   }
 
   void _startListening() async {
+    if (!await _ensureSpeechReady()) return;
     await _speechToText.listen(
       onResult: (result) {
         setState(() {
@@ -139,12 +163,16 @@ class _ChatScreenState extends State<ChatScreen> {
 
   void _checkModels() async {
     final downloader = ModelDownloaderService();
-    final available = await downloader.isModelDownloaded("gemma-4-E2B-it.litertlm");
-    if (mounted) {
-      setState(() {
-        _isModelAvailable = available;
-      });
+    final installed = <String, bool>{};
+    for (final spec in ModelRegistry.all) {
+      installed[spec.fileName] = await downloader.isModelDownloaded(spec.fileName);
     }
+    if (!mounted) return;
+    setState(() {
+      _installedModels
+        ..clear()
+        ..addAll(installed);
+    });
   }
 
   void _startThinkingAnimation() {
@@ -190,6 +218,10 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _initAgent() async {
     try {
       await _agentService.initialize(widget.modelFileName);
+      // Remember the model so next cold-start can boot straight into chat
+      // with this one instead of bouncing back to Home.
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('last_used_model_file', widget.modelFileName);
       final sessions = await _dbService.getSessions();
 
       await _createNewChat(isInitial: true);
@@ -253,6 +285,10 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _pickImage() async {
+    if (!_currentSpec.supportsVision) {
+      _promptVisionSwitch();
+      return;
+    }
     final XFile? image = await _picker.pickImage(source: ImageSource.gallery);
     if (image != null) {
       setState(() {
@@ -260,6 +296,65 @@ class _ChatScreenState extends State<ChatScreen> {
       });
       _scrollToBottom();
     }
+  }
+
+  /// Asked when the user taps the attach button on a text-only model.
+  /// Routes them to the vision-capable spec (downloading if needed).
+  void _promptVisionSwitch() {
+    final visionSpec = ModelRegistry.all.firstWhere(
+      (s) => s.supportsVision,
+      orElse: () => _currentSpec,
+    );
+    if (visionSpec.id == _currentSpec.id) return;
+
+    final isInstalled = _installedModels[visionSpec.fileName] ?? false;
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A1A),
+        title: Text(
+          'Images need ${visionSpec.displayName}',
+          style: GoogleFonts.outfit(color: Colors.white, fontWeight: FontWeight.w600),
+        ),
+        content: Text(
+          isInstalled
+              ? '${_currentSpec.displayName} is text-only. Switch to ${visionSpec.displayName} to attach images?'
+              : '${_currentSpec.displayName} is text-only. ${visionSpec.displayName} (${visionSpec.sizeLabel}) supports vision — download it now?',
+          style: GoogleFonts.outfit(color: Colors.white70, height: 1.5),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text('Not now',
+                style: GoogleFonts.outfit(color: Colors.white54)),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              if (isInstalled) {
+                Navigator.pushReplacement(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) =>
+                        SplashScreen(modelFileName: visionSpec.fileName),
+                  ),
+                );
+              } else {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const HomeScreen()),
+                );
+              }
+            },
+            child: Text(
+              isInstalled ? 'Switch' : 'Download',
+              style: GoogleFonts.outfit(
+                  color: const Color(0xFF60A5FA), fontWeight: FontWeight.w600),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   void _handleSubmitted(String text) async {
@@ -320,11 +415,33 @@ class _ChatScreenState extends State<ChatScreen> {
       if (mounted) {
         setState(() {
           _isTyping = false;
-          _messages.add(ChatMessage(text: "Error: $e", isUser: false));
+          _messages.add(ChatMessage(text: _humanizeError(e), isUser: false));
         });
         _scrollToBottom();
       }
     }
+  }
+
+  /// Map raw platform/SDK errors to short, user-readable copy. Anything we
+  /// don't recognise falls back to a generic retry hint — never a stack trace.
+  String _humanizeError(Object err) {
+    final s = err.toString();
+    if (s.contains('Previous invocation')) {
+      return "I was still finishing the last reply. Try sending that again.";
+    }
+    if (s.contains('Model not initialized')) {
+      return "The model isn't loaded yet. Give it a moment and try again.";
+    }
+    if (s.contains('Model file not found')) {
+      return "I couldn't find the model on disk — please re-download it from the home screen.";
+    }
+    if (s.contains('SocketException') || s.contains('Failed host lookup')) {
+      return "Looks like the network is down — that tool needs an internet connection.";
+    }
+    if (s.contains('PlatformException') || s.contains('IllegalStateException')) {
+      return "Something went wrong with the on-device inference. Try sending that again.";
+    }
+    return "Something went wrong. Try again.";
   }
 
   Future<void> _openVoiceMode() async {
@@ -367,6 +484,20 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
+  /// Called per streamed token. Coalesces N requests per frame into one cheap
+  /// jumpTo so we don't queue dozens of overlapping animateTo() calls — which
+  /// is what was driving the per-token UI stutter on entry-tier devices.
+  void _requestStreamScroll() {
+    if (_scrollPending) return;
+    _scrollPending = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scrollPending = false;
+      if (_scrollController.hasClients) {
+        _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+      }
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -386,7 +517,7 @@ class _ChatScreenState extends State<ChatScreen> {
             mainAxisSize: MainAxisSize.min,
             children: [
               Text(
-                'Agent',
+                _currentSpec.displayName,
                 style: GoogleFonts.outfit(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w600, letterSpacing: -0.5),
               ),
               const SizedBox(width: 4),
@@ -394,23 +525,59 @@ class _ChatScreenState extends State<ChatScreen> {
             ],
           ),
           onSelected: (value) {
+            if (value == '__manage__') {
+              Navigator.push(context,
+                  MaterialPageRoute(builder: (_) => const HomeScreen()));
+              return;
+            }
             if (value != widget.modelFileName) {
-              Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => ChatScreen(modelFileName: value)));
+              Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => SplashScreen(modelFileName: value)));
             }
           },
-          itemBuilder: (context) => [
-            if (_isModelAvailable)
-              const PopupMenuItem(
-                value: "gemma-4-E2B-it.litertlm",
+          itemBuilder: (context) {
+            final items = <PopupMenuEntry<String>>[];
+            for (final spec in ModelRegistry.all) {
+              if (_installedModels[spec.fileName] != true) continue;
+              final isCurrent = spec.fileName == widget.modelFileName;
+              items.add(PopupMenuItem(
+                value: spec.fileName,
                 child: Row(
                   children: [
-                    Icon(Icons.auto_awesome_rounded, color: Colors.blueAccent, size: 20),
-                    SizedBox(width: 12),
-                    Text('Gemma 4 E2B', style: TextStyle(color: Colors.blueAccent, fontWeight: FontWeight.w500)),
+                    Icon(
+                      spec.supportsVision
+                          ? Icons.auto_awesome_rounded
+                          : Icons.bolt_rounded,
+                      color: isCurrent ? Colors.blueAccent : Colors.white60,
+                      size: 20,
+                    ),
+                    const SizedBox(width: 12),
+                    Text(
+                      spec.displayName,
+                      style: TextStyle(
+                        color: isCurrent ? Colors.blueAccent : Colors.white,
+                        fontWeight:
+                            isCurrent ? FontWeight.w600 : FontWeight.w500,
+                      ),
+                    ),
                   ],
                 ),
+              ));
+            }
+            if (items.isNotEmpty) {
+              items.add(const PopupMenuDivider());
+            }
+            items.add(const PopupMenuItem(
+              value: '__manage__',
+              child: Row(
+                children: [
+                  Icon(Icons.download_rounded, color: Colors.white60, size: 20),
+                  SizedBox(width: 12),
+                  Text('Manage models', style: TextStyle(color: Colors.white)),
+                ],
               ),
-          ],
+            ));
+            return items;
+          },
         ),
         centerTitle: true,
         elevation: 0,
@@ -433,7 +600,7 @@ class _ChatScreenState extends State<ChatScreen> {
         children: [
           Expanded(
             child: _isInitializing
-                ? const _LoadingScreen()
+                ? const _ChatBootstrapping()
                 : Column(
                     children: [
                       Expanded(
@@ -475,7 +642,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     ],
                   ),
           ),
-          _buildMessageComposer(),
+          if (!_isInitializing) _buildMessageComposer(),
         ],
       ),
     );
@@ -657,7 +824,13 @@ class _ChatScreenState extends State<ChatScreen> {
                     return GestureDetector(
                       onTap: () {
                         if (_isTyping) {
-                          setState(() => _isTyping = false);
+                          // Halt the model. _handleSubmitted's awaited
+                          // sendMessage will return with the partial text the
+                          // model produced so far, and the regular completion
+                          // path adds it as a normal assistant message and
+                          // flips _isTyping off — so we don't toggle state
+                          // here ourselves.
+                          _agentService.stopGeneration();
                         } else if (hasText) {
                           _handleSubmitted(_textController.text);
                         } else {
@@ -780,63 +953,22 @@ class _TypingIndicator extends StatelessWidget {
   }
 }
 
-/// Loading state shown while the model is being mapped into memory on the
-/// first chat open (or after Android killed the process while backgrounded).
-class _LoadingScreen extends StatelessWidget {
-  const _LoadingScreen();
+/// Brief state shown while the chat session is being set up. The heavy model
+/// load happens on SplashScreen, so this is just for the quick DB-session +
+/// system-prompt warm-up step.
+class _ChatBootstrapping extends StatelessWidget {
+  const _ChatBootstrapping();
 
   @override
   Widget build(BuildContext context) {
     return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            width: 64,
-            height: 64,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              gradient: LinearGradient(
-                colors: [
-                  const Color(0xFF3B82F6).withValues(alpha: 0.25),
-                  const Color(0xFF8B5CF6).withValues(alpha: 0.15),
-                ],
-              ),
-              border: Border.all(
-                  color: const Color(0xFF3B82F6).withValues(alpha: 0.4)),
-            ),
-            child: const Center(
-              child: Icon(Icons.auto_awesome_rounded,
-                  color: Colors.white, size: 28),
-            ),
-          ),
-          const SizedBox(height: 22),
-          SizedBox(
-            width: 18,
-            height: 18,
-            child: CircularProgressIndicator(
-              strokeWidth: 1.6,
-              color: Colors.white.withValues(alpha: 0.4),
-            ),
-          ),
-          const SizedBox(height: 16),
-          Text(
-            'Loading model...',
-            style: GoogleFonts.outfit(
-              color: Colors.white70,
-              fontSize: 14,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            'First open can take a few seconds',
-            style: GoogleFonts.outfit(
-              color: Colors.white.withValues(alpha: 0.35),
-              fontSize: 12,
-            ),
-          ),
-        ],
+      child: SizedBox(
+        width: 20,
+        height: 20,
+        child: CircularProgressIndicator(
+          strokeWidth: 1.6,
+          color: Colors.white.withValues(alpha: 0.35),
+        ),
       ),
     );
   }

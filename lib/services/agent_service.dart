@@ -2,9 +2,12 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:async';
 import 'dart:typed_data';
-import 'package:flutter_gemma/flutter_gemma.dart';
+// flutter_gemma exports a `ModelSpec` that collides with ours. We never need
+// the SDK's variant in this file, so hide it.
+import 'package:flutter_gemma/flutter_gemma.dart' hide ModelSpec;
 import 'package:flutter_background/flutter_background.dart';
 import 'model_downloader_service.dart';
+import 'model_registry.dart';
 import 'device_service.dart';
 import 'file_service.dart';
 import 'database_service.dart';
@@ -29,7 +32,9 @@ class AgentService {
   factory AgentService() => _instance;
   AgentService._internal();
 
-  static const String _modelName = 'Gemma 4 E2B';
+  ModelSpec _activeSpec = ModelRegistry.gemma3_1bLite;
+  ModelSpec get activeSpec => _activeSpec;
+  String get _modelName => _activeSpec.displayName;
 
   final DeviceService _deviceService = DeviceService();
   final FileService _fileService = FileService();
@@ -48,6 +53,10 @@ class AgentService {
   InferenceModel? _model;
   InferenceChat? _chat;
 
+  // Set when the user taps the stop button mid-stream. The stream loop checks
+  // this so we don't recurse into a follow-up tool/summary turn after a stop.
+  bool _stopRequested = false;
+
   static bool _gemmaReady = false;
   static bool _backgroundReady = false;
 
@@ -59,7 +68,7 @@ class AgentService {
     if (!_backgroundReady) {
       try {
         const androidConfig = FlutterBackgroundAndroidConfig(
-          notificationTitle: "Onyx Intelligence",
+          notificationTitle: "Local Agent",
           notificationText: "Background processing active",
           notificationImportance: AndroidNotificationImportance.normal,
           notificationIcon:
@@ -72,7 +81,15 @@ class AgentService {
   }
 
   Future<void> initialize(String modelFileName) async {
-    _statusController.add('Initializing Local Engine...');
+    // Idempotent — splash + chat both end up calling this on the same model;
+    // we don't want to re-map the .task / .litertlm file each time.
+    if (_model != null && _activeSpec.fileName == modelFileName) {
+      _statusController.add('');
+      return;
+    }
+
+    _activeSpec = ModelRegistry.byFileName(modelFileName);
+    _statusController.add('Initializing ${_activeSpec.displayName}...');
 
     await _ensureNativeReady();
 
@@ -85,18 +102,15 @@ class AgentService {
     }
 
     await FlutterGemma.installModel(
-      modelType: ModelType.gemma4,
-      fileType: ModelFileType.litertlm,
+      modelType: _activeSpec.modelType,
+      fileType: _activeSpec.fileType,
     ).fromFile(modelPath).install();
 
-    // Gemma 4 E2B supports a much larger KV window than the old Qwen .task
-    // (ekv1280). We give the agent room for real tool conversations.
-    // Gemma 4 E2B is multimodal — enable vision so users can attach images.
     _model = await FlutterGemma.getActiveModel(
-      maxTokens: 4096,
-      preferredBackend: PreferredBackend.gpu,
-      supportImage: true,
-      maxNumImages: 1,
+      maxTokens: _activeSpec.maxTokens,
+      preferredBackend: _activeSpec.preferredBackend,
+      supportImage: _activeSpec.supportsVision,
+      maxNumImages: _activeSpec.supportsVision ? 1 : 0,
     );
 
     _statusController.add('');
@@ -120,19 +134,19 @@ class AgentService {
     if (_model == null) return;
 
     _chat = await _model!.createChat(
-      temperature: 0.7,
+      temperature: _activeSpec.temperature,
       randomSeed: 1,
-      topK: 40,
-      topP: 0.95,
+      topK: _activeSpec.topK,
+      topP: _activeSpec.topP,
       tokenBuffer: 256,
-      supportsFunctionCalls: true,
-      tools: _tools,
-      modelType: ModelType.gemma4,
-      // Required for Gemma 4: enables the `<|channel>thought\n…<channel|>`
-      // filter so reasoning tokens are stripped from the visible stream and
-      // surfaced as ThinkingResponse events instead. Without this they leak
-      // through as raw text in the chat bubble.
-      isThinking: true,
+      supportsFunctionCalls: _activeSpec.supportsTools,
+      tools: _activeSpec.supportsTools ? _tools : const [],
+      modelType: _activeSpec.modelType,
+      // Gemma 4 emits `<|channel>thought\n…<channel|>` reasoning tokens; the
+      // filter routes them to ThinkingResponse events. Smaller models (1B,
+      // Qwen3) don't have that channel — leaving the flag on for them strips
+      // legitimate output.
+      isThinking: _activeSpec.isThinking,
     );
 
     // Seed the new chat with a system instruction. Kept short so we don't
@@ -152,7 +166,24 @@ class AgentService {
   }
 
   String _getSystemPrompt() {
-    return '''You are ONYX, an on-device AI agent running on the user's Android phone. You are agentic: you chain tools to actually accomplish what the user asks, and you don't stop at half a step.
+    // Per-model prompts. The 1B model treats long agentic instructions as
+    // content to echo back ("Okay! Let's focus on building an effective
+    // response system…"), and it skips function calling when given a wall
+    // of natural-language guidance. Keep its prompt minimal and rule-based.
+    // E2B has the capacity for the full agentic framing.
+    if (_activeSpec.id == 'gemma3-1b-lite') {
+      return '''You are a helpful on-device assistant on the user's phone.
+
+For any request that maps to an available tool — turn on flashlight, vibrate, set volume, open an app, list files, search the web, check time/battery/connectivity, read or copy clipboard, etc. — CALL THE TOOL. Do not say "I will" or "let me" — emit the function call.
+
+For greetings, small talk, and general knowledge, reply in one short sentence. No JSON, no preambles, no apologies.
+
+Never invent phone numbers, contacts, or file paths.''';
+    }
+
+    return '''You are an on-device AI agent running on the user's Android phone. You are agentic: you chain tools to actually accomplish what the user asks, and you don't stop at half a step.
+
+RESPOND DIRECTLY. For greetings, names, chit-chat, basic questions, and anything you already know — answer in one or two short sentences immediately. Skip internal reasoning for simple requests; only think when a task genuinely needs multi-step planning. Long deliberation on simple questions is wrong.
 
 Decision flow:
 1. If the user attached an image, that image is in this message — look at it directly. Do NOT call get_recent_screenshots or list_files for an attached image; those tools are only for files already on the device.
@@ -160,6 +191,9 @@ Decision flow:
 3. If a request needs more than one step, chain tools. Examples:
    - "message Sarah on WhatsApp" → search_contacts("Sarah") → send_whatsapp(<found-number>, message).
    - "open the biggest app" → list_apps → launch_app_by_name with the top result.
+   - "copy current time to clipboard" → get_date_time → copy_to_clipboard(text=that time).
+   - "find APK files" → list_files(extension="apk").
+   - "what was the last file I modified" → list_files(sortBy="modified").
 4. For chit-chat, greetings, definitions, and general knowledge already in your training, reply directly without a tool.
 
 Hard rules:
@@ -167,6 +201,25 @@ Hard rules:
 - When listing apps to uninstall or by size, use the sizeMB field from list_apps and present name + size, biggest first.
 - When opening an app by its display name, prefer launch_app_by_name over guessing the package name.
 - After a tool runs, summarize the result in one or two short sentences. Be concise.''';
+  }
+
+  /// Halt the in-flight generation. The flutter_gemma SDK closes the response
+  /// stream cleanly on stop, so the active `_streamResponseAndHandleTools`
+  /// call exits naturally with whatever text was generated so far — that
+  /// partial reply gets saved as the assistant's message like any other turn.
+  Future<void> stopGeneration() async {
+    if (_chat == null) return;
+    _stopRequested = true;
+    try {
+      await _chat!.stopGeneration();
+    } catch (_) {
+      // stop_not_supported or already-stopped — the stream still ends on its
+      // own when the model finishes, so nothing else to do here.
+    }
+    try {
+      await FlutterBackground.disableBackgroundExecution();
+    } catch (_) {}
+    _statusController.add('');
   }
 
   Future<AgentResponse> sendMessage(
@@ -199,6 +252,7 @@ Hard rules:
 
     await _chat!.addQuery(userMessage);
 
+    _stopRequested = false;
     final result = await _streamResponseAndHandleTools(sessionId);
 
     try {
@@ -220,6 +274,20 @@ Hard rules:
     final startTime = DateTime.now();
     bool streamStarted = false;
 
+    // Loop-breaker for small models. Gemma 3 1B can latch onto a single
+    // high-probability token (often "\n") and emit it for the rest of the
+    // budget. We watch a sliding window of the most recent tokens and bail
+    // out the moment the same one dominates it.
+    //
+    // Tuned to avoid false positives on normal short replies: only fires
+    // after a warm-up, and only on substantive (non-whitespace) tokens —
+    // a comma or a space repeating is not a loop.
+    const int loopWarmup = 24;
+    const int loopWindow = 20;
+    const int loopThreshold = 16;
+    final recentTokens = <String>[];
+    bool loopAborted = false;
+
     await for (final response in _chat!.generateChatResponseAsync()) {
       if (response is TextResponse) {
         final token = response.token;
@@ -231,6 +299,41 @@ Hard rules:
         fullText += token;
         tokenCount++;
         _tokenStreamController.add(token);
+
+        recentTokens.add(token);
+        if (recentTokens.length > loopWindow) {
+          recentTokens.removeAt(0);
+        }
+        if (tokenCount >= loopWarmup && recentTokens.length == loopWindow) {
+          // Count the most common token in the window. Whitespace and
+          // punctuation are excluded — they can legitimately recur.
+          final counts = <String, int>{};
+          String? topToken;
+          int topCount = 0;
+          for (final t in recentTokens) {
+            final n = (counts[t] ?? 0) + 1;
+            counts[t] = n;
+            if (n > topCount) {
+              topCount = n;
+              topToken = t;
+            }
+          }
+          final substantive = topToken != null &&
+              (topToken.trim().length > 1 ||
+                  topToken == '\n' ||
+                  topToken == '\\n');
+          if (topCount >= loopThreshold && substantive) {
+            loopAborted = true;
+            try {
+              await _chat!.stopGeneration();
+            } catch (_) {}
+            if (streamStarted) {
+              _tokenStreamController.add('\x02');
+              streamStarted = false;
+            }
+            break;
+          }
+        }
       } else if (response is FunctionCallResponse) {
         toolName = response.name;
         toolArgs = Map<String, dynamic>.from(response.args);
@@ -272,7 +375,25 @@ Hard rules:
       streamStarted = false;
     }
 
+    // User tapped stop — don't fire the captured tool call or fall into the
+    // follow-up summary turn. Persist whatever plain text was streamed (may
+    // be empty if the stop landed before any text token) and return.
+    if (_stopRequested) {
+      final partial = fullText.trim();
+      final stoppedText = partial.isEmpty ? '[Stopped]' : partial;
+      await _dbService.saveMessage('assistant', stoppedText, sessionId);
+      return AgentResponse(stoppedText, _modelName, 0,
+          tps: tps, evalTime: evalTimeMs / 1000.0);
+    }
+
     if (toolName != null) {
+      // After a FunctionCallResponse we exit the stream early. MediaPipe's
+      // LlmInferenceSession can still report "Previous invocation still
+      // processing" on the next addQuery — force a stop so the engine is in
+      // a clean state before we feed the tool response back.
+      try {
+        await _chat!.stopGeneration();
+      } catch (_) {}
       return _handleToolCall(
         sessionId,
         toolName,
@@ -282,14 +403,40 @@ Hard rules:
       );
     }
 
-    final finalText = fullText.trim().isEmpty
-        ? "I'm not sure how to help with that. Could you rephrase?"
-        : fullText.trim();
+    final trimmed = fullText.trim();
+    // Treat output that's effectively whitespace, just escape sequences, or
+    // single repeating chars as garbage — the 1B model degrades into this
+    // state on harder prompts.
+    final isGarbage = loopAborted ||
+        trimmed.isEmpty ||
+        RegExp(r'^[\s\\n]+$').hasMatch(trimmed) ||
+        (trimmed.length > 20 && _isSingleCharRepeat(trimmed));
+
+    final String finalText;
+    if (isGarbage) {
+      finalText = _activeSpec.id == 'gemma3-1b-lite'
+          ? "I got stuck on that one. Try rephrasing — or switch to Gemma 4 E2B from the model picker for tougher requests, it handles tools much more reliably."
+          : "I got stuck on that. Could you rephrase?";
+    } else {
+      finalText = trimmed;
+    }
 
     await _dbService.saveMessage('assistant', finalText, sessionId);
 
     return AgentResponse(finalText, _modelName, 0,
         tps: tps, evalTime: evalTimeMs / 1000.0);
+  }
+
+  /// True when [s] is the same character (or escape pair like "\\n") repeated
+  /// throughout — a sign the model latched onto one token.
+  bool _isSingleCharRepeat(String s) {
+    final stripped = s.replaceAll(RegExp(r'\s'), '');
+    if (stripped.isEmpty) return true;
+    final first = stripped[0];
+    for (final c in stripped.split('')) {
+      if (c != first) return false;
+    }
+    return true;
   }
 
   Future<AgentResponse> _handleToolCall(
@@ -303,7 +450,9 @@ Hard rules:
     final toolResult = await _executeTool(toolName, args);
 
     // Feed the result back into chat history so the model knows what happened.
-    await _chat!.addQuery(Message.toolResponse(
+    // Use the retrying helper — MediaPipe occasionally reports the session as
+    // still-busy right after a function-call response.
+    await _addQueryWithRetry(Message.toolResponse(
       toolName: toolName,
       response: toolResult,
     ));
@@ -480,9 +629,26 @@ Hard rules:
     Tool(
       name: 'list_files',
       description:
-          'List documents on the device (PDFs, text, images). Use when the user '
-          'asks about their files.',
-      parameters: {'type': 'object', 'properties': {}},
+          'List user files on the device. Accepts optional filters: '
+          '`extension` (e.g. "pdf", "apk", "jpg") to keep only files of that '
+          'type, and `sortBy` ("modified" returns most recently modified first; '
+          '"name" sorts alphabetically; "size" returns largest first). Use '
+          '`sortBy: "modified"` for "what did I just save/edit" questions, '
+          'and `extension` for type-specific questions like "find my PDFs" '
+          'or "show me APKs".',
+      parameters: {
+        'type': 'object',
+        'properties': {
+          'extension': {
+            'type': 'string',
+            'description': 'File extension to filter by, without leading dot (e.g. "pdf").',
+          },
+          'sortBy': {
+            'type': 'string',
+            'description': 'One of: "modified", "name", "size". Default: "modified".',
+          },
+        },
+      },
     ),
     Tool(
       name: 'list_apps',
@@ -705,14 +871,44 @@ Hard rules:
         case 'get_public_ip':
           return await _searchService.getPublicIP();
         case 'list_files':
-          final files = await _fileService.indexDocuments();
-          return {
-            'files': files
-                .take(30)
-                .map((f) => {'name': f.name, 'path': f.path})
-                .toList(),
-            'total': files.length,
-          };
+          {
+            final all = await _fileService.indexDocuments();
+            final extFilter =
+                (args['extension'] as String?)?.trim().toLowerCase();
+            var filtered = all;
+            if (extFilter != null && extFilter.isNotEmpty) {
+              final wanted = extFilter.startsWith('.')
+                  ? extFilter.substring(1)
+                  : extFilter;
+              filtered = all
+                  .where((f) => f.type.toLowerCase() == wanted)
+                  .toList();
+            }
+            final sortBy =
+                (args['sortBy'] as String?)?.trim().toLowerCase() ?? 'modified';
+            switch (sortBy) {
+              case 'name':
+                filtered.sort((a, b) => a.name.compareTo(b.name));
+                break;
+              case 'size':
+                filtered.sort((a, b) => b.size.compareTo(a.size));
+                break;
+              case 'modified':
+              default:
+                filtered.sort((a, b) => b.modifiedDate.compareTo(a.modifiedDate));
+            }
+            return {
+              'files': filtered.take(30).map((f) => {
+                    'name': f.name,
+                    'path': f.path,
+                    'sizeKB': (f.size / 1024).round(),
+                    'modified': f.modifiedDate.toIso8601String(),
+                  }).toList(),
+              'total': filtered.length,
+              'filterExtension': extFilter,
+              'sortedBy': sortBy,
+            };
+          }
         case 'toggle_flashlight':
           return {
             'success': await _utilityService
@@ -825,6 +1021,25 @@ Hard rules:
       }
     } catch (e) {
       return {'error': e.toString()};
+    }
+  }
+
+  // Retrying addQuery for tool responses. MediaPipe's session sometimes
+  // reports "Previous invocation still processing" right after a
+  // FunctionCallResponse — we stop the engine and back off, then try again.
+  Future<void> _addQueryWithRetry(Message msg) async {
+    for (int attempt = 0; attempt < 3; attempt++) {
+      try {
+        await _chat!.addQuery(msg);
+        return;
+      } catch (e) {
+        final isBusy = e.toString().contains('Previous invocation');
+        if (!isBusy || attempt == 2) rethrow;
+        try {
+          await _chat!.stopGeneration();
+        } catch (_) {}
+        await Future.delayed(Duration(milliseconds: 120 * (attempt + 1)));
+      }
     }
   }
 

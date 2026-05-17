@@ -66,22 +66,16 @@ class _VoiceModeScreenState extends State<VoiceModeScreen>
       return;
     }
 
+    // Explicit language + awaitSpeakCompletion are required on Android for
+    // speak() to reliably block until done and for handlers to fire. Without
+    // them, speak() can silently no-op on the first call after a cold start.
+    try {
+      await _tts.setLanguage('en-US');
+    } catch (_) {}
     await _tts.setSpeechRate(0.48);
     await _tts.setPitch(1.0);
     await _tts.setVolume(1.0);
-    _tts.setStartHandler(() {
-      if (_disposed) return;
-      _setPhase(_VoicePhase.speaking, label: 'Speaking');
-    });
-    _tts.setCompletionHandler(() {
-      if (_disposed) return;
-      // Done speaking → loop back to listening unless the user closed us.
-      _startListening();
-    });
-    _tts.setErrorHandler((_) {
-      if (_disposed) return;
-      _startListening();
-    });
+    await _tts.awaitSpeakCompletion(true);
 
     _startListening();
   }
@@ -142,15 +136,19 @@ class _VoiceModeScreenState extends State<VoiceModeScreen>
 
   Future<void> _handleSubmit(String text) async {
     if (_disposed) return;
-    await _stt.stop();
+    // Cancel (not stop) makes speech_to_text release the audio session
+    // synchronously so TTS can immediately take it. With stop() Android
+    // sometimes holds the mic line and TTS plays silently.
+    try {
+      await _stt.cancel();
+    } catch (_) {}
     _setPhase(_VoicePhase.thinking, label: 'Thinking');
 
     try {
       // Persist the user's spoken turn so it shows up in the chat list when
       // they exit voice mode. The assistant turn is saved inside sendMessage.
       await _db.saveMessage('user', text, widget.sessionId);
-      final response =
-          await _agent.sendMessage(text, widget.sessionId);
+      final response = await _agent.sendMessage(text, widget.sessionId);
       if (_disposed) return;
       // Strip markdown so TTS doesn't read "asterisk asterisk".
       final spoken = _stripForTts(response.text);
@@ -159,7 +157,13 @@ class _VoiceModeScreenState extends State<VoiceModeScreen>
         _startListening();
         return;
       }
+      _setPhase(_VoicePhase.speaking, label: 'Speaking');
+      // awaitSpeakCompletion(true) makes this future complete when TTS
+      // actually finishes — much more reliable than the setCompletionHandler
+      // callback, which can silently miss on Android.
       await _tts.speak(spoken);
+      if (_disposed) return;
+      _startListening();
     } catch (e) {
       _failWith('Agent error: $e');
     }
@@ -233,47 +237,58 @@ class _VoiceModeScreenState extends State<VoiceModeScreen>
     return Scaffold(
       backgroundColor: Colors.black,
       body: SafeArea(
-        child: Stack(
+        child: Column(
           children: [
-            // Close button.
-            Positioned(
-              top: 8,
-              right: 8,
-              child: IconButton(
-                icon: const Icon(Icons.close_rounded,
-                    color: Colors.white70, size: 28),
-                onPressed: _close,
+            // Top bar — symmetric so the title is truly centered.
+            SizedBox(
+              height: 56,
+              child: Row(
+                children: [
+                  const SizedBox(width: 56),
+                  Expanded(
+                    child: Center(
+                      child: Text(
+                        'Voice mode',
+                        style: GoogleFonts.outfit(
+                          color: Colors.white.withValues(alpha: 0.55),
+                          fontSize: 13,
+                          letterSpacing: 1.6,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 56,
+                    child: IconButton(
+                      icon: const Icon(Icons.close_rounded,
+                          color: Colors.white70, size: 26),
+                      onPressed: _close,
+                    ),
+                  ),
+                ],
               ),
             ),
-            // Phase + transcript stack.
-            Column(
-              children: [
-                const SizedBox(height: 36),
-                Text(
-                  'Voice mode',
-                  style: GoogleFonts.outfit(
-                    color: Colors.white.withValues(alpha: 0.45),
-                    fontSize: 13,
-                    letterSpacing: 1.6,
-                    fontWeight: FontWeight.w600,
+            Expanded(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  GestureDetector(
+                    onTap: _tapOrb,
+                    child: _Orb(
+                      controller: _orbController,
+                      phase: _phase,
+                      soundLevel: _soundLevel,
+                    ),
                   ),
-                ),
-                const Spacer(),
-                GestureDetector(
-                  onTap: _tapOrb,
-                  child: _Orb(
-                    controller: _orbController,
-                    phase: _phase,
-                    soundLevel: _soundLevel,
-                  ),
-                ),
-                const SizedBox(height: 28),
-                _statusLine(),
-                const SizedBox(height: 12),
-                _transcriptBlock(),
-                const Spacer(flex: 2),
-              ],
+                  const SizedBox(height: 28),
+                  _statusLine(),
+                  const SizedBox(height: 12),
+                  _transcriptBlock(),
+                ],
+              ),
             ),
+            const SizedBox(height: 24),
           ],
         ),
       ),

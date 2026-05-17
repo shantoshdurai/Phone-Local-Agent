@@ -1,5 +1,4 @@
 import 'dart:io';
-import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -230,8 +229,8 @@ class _OnboardingScreenState extends State<OnboardingScreen>
         ),
         const SizedBox(height: 12),
         Text(
-          'Onyx runs entirely on your phone — no cloud, no telemetry. '
-          'Grant a few permissions so it can use the tools that make it useful.',
+          'Everything runs entirely on your phone — no cloud, no telemetry. '
+          'Grant a few permissions so the agent can use the tools that make it useful.',
           style: GoogleFonts.outfit(
             color: Colors.white54,
             fontSize: 14,
@@ -256,71 +255,80 @@ class _OnboardingScreenState extends State<OnboardingScreen>
             ? Icons.cancel_rounded
             : Icons.radio_button_unchecked_rounded;
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.06),
-              borderRadius: BorderRadius.circular(10),
+    return InkWell(
+      borderRadius: BorderRadius.circular(10),
+      onTap: granted || _requesting
+          ? null
+          : () async {
+              final ok = await _requestOne(p.key);
+              if (!mounted) return;
+              setState(() {
+                p.status = ok ? PermStatus.granted : PermStatus.denied;
+              });
+            },
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.06),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Icon(p.icon, color: Colors.white70, size: 18),
             ),
-            child: Icon(p.icon, color: Colors.white70, size: 18),
-          ),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  p.title,
-                  style: GoogleFonts.outfit(
-                    color: Colors.white,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    p.title,
+                    style: GoogleFonts.outfit(
+                      color: Colors.white,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  p.subtitle,
-                  style: GoogleFonts.outfit(
-                    color: Colors.white54,
-                    fontSize: 12,
-                    height: 1.4,
+                  const SizedBox(height: 2),
+                  Text(
+                    p.subtitle,
+                    style: GoogleFonts.outfit(
+                      color: Colors.white54,
+                      fontSize: 12,
+                      height: 1.4,
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
-          const SizedBox(width: 10),
-          Icon(statusIcon, color: color, size: 20),
-        ],
+            const SizedBox(width: 10),
+            Icon(statusIcon, color: color, size: 20),
+          ],
+        ),
       ),
     );
   }
 
   Widget _buildPermCard() {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(16),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-        child: Container(
-          padding: const EdgeInsets.all(20),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(16),
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [
-                Colors.white.withValues(alpha: 0.07),
-                Colors.white.withValues(alpha: 0.03),
-              ],
-            ),
-            border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
-          ),
-          child: Column(
+    // Plain gradient — BackdropFilter blur was dropping frames on cold start.
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(16),
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            const Color(0xFF1A1A22),
+            const Color(0xFF14141A),
+          ],
+        ),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+      ),
+      child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
@@ -337,9 +345,7 @@ class _OnboardingScreenState extends State<OnboardingScreen>
                 _animated(2 + i, _permRow(_perms[i])),
             ],
           ),
-        ),
-      ),
-    );
+        );
   }
 
   Widget _buildButtons() {

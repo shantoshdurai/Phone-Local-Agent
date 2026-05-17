@@ -1,9 +1,9 @@
 
-import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../services/device_service.dart';
 import '../services/model_downloader_service.dart';
+import '../services/model_registry.dart';
 import 'home_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -19,7 +19,7 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
 
   Map<String, dynamic> _stats = {};
   bool _statsLoading = true;
-  bool _isModelDownloaded = false;
+  final Map<String, bool> _modelReady = {};
 
   late AnimationController _entranceController;
   late List<Animation<double>> _fadeAnims;
@@ -61,12 +61,17 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
 
   Future<void> _loadData() async {
     final stats = await _deviceService.getQuickStats();
-    final modelReady = await _downloader.isModelDownloaded("gemma-4-E2B-it.litertlm");
+    final ready = <String, bool>{};
+    for (final spec in ModelRegistry.all) {
+      ready[spec.fileName] = await _downloader.isModelDownloaded(spec.fileName);
+    }
     if (mounted) {
       setState(() {
         _stats = stats;
         _statsLoading = false;
-        _isModelDownloaded = modelReady;
+        _modelReady
+          ..clear()
+          ..addAll(ready);
       });
     }
   }
@@ -79,28 +84,23 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
   }
 
   Widget _glassCard({required Widget child}) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(16),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-        child: Container(
-          width: double.infinity,
-          padding: const EdgeInsets.all(20),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(16),
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [
-                Colors.white.withValues(alpha: 0.07),
-                Colors.white.withValues(alpha: 0.03),
-              ],
-            ),
-            border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
-          ),
-          child: child,
+    // Plain gradient — replaces BackdropFilter blur for performance.
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(16),
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            const Color(0xFF1A1A22),
+            const Color(0xFF14141A),
+          ],
         ),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
       ),
+      child: child,
     );
   }
 
@@ -143,12 +143,15 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
             ],
           ),
           const SizedBox(height: 18),
-          _modelRow(
-            'Gemma 4 E2B',
-            'Primary',
-            '~2.59 GB',
-            _isModelDownloaded,
-          ),
+          for (int i = 0; i < ModelRegistry.all.length; i++) ...[
+            _modelRow(
+              ModelRegistry.all[i].displayName,
+              ModelRegistry.all[i].supportsVision ? 'Vision' : 'Lite',
+              ModelRegistry.all[i].sizeLabel,
+              _modelReady[ModelRegistry.all[i].fileName] ?? false,
+            ),
+            if (i < ModelRegistry.all.length - 1) const SizedBox(height: 12),
+          ],
           const SizedBox(height: 16),
           SizedBox(
             width: double.infinity,
@@ -317,7 +320,11 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
 
     double usedFraction = 0;
     double modelUsageGB = 0;
-    if (_isModelDownloaded) modelUsageGB += 2.59;
+    for (final spec in ModelRegistry.all) {
+      if (_modelReady[spec.fileName] == true) {
+        modelUsageGB += spec.sizeMB / 1024.0;
+      }
+    }
 
     if (totalMB != null && freeMB != null) {
       usedFraction = 1.0 - (freeMB / totalMB);

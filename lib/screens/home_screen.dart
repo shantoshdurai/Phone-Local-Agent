@@ -1,11 +1,11 @@
 
 import 'dart:io';
-import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../services/model_downloader_service.dart';
 import '../services/device_service.dart';
-import 'chat_screen.dart';
+import '../services/model_registry.dart';
+import 'splash_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -18,10 +18,14 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   final ModelDownloaderService _downloader = ModelDownloaderService();
   final DeviceService _deviceService = DeviceService();
 
-  bool _isModelDownloaded = false;
-  bool _hasModelPartial = false;
+  // Per-model: is the .task/.litertlm fully on disk; is there a half-finished
+  // .part file we can resume from. Keyed by ModelSpec.fileName.
+  final Map<String, bool> _isDownloaded = {};
+  final Map<String, bool> _hasPartial = {};
 
-  bool _isDownloading = false;
+  // Only one download runs at a time. This holds the spec for the active
+  // transfer so the UI can show progress on the right card.
+  String? _downloadingFileName;
   double _downloadProgress = 0.0;
   String _downloadSpeed = '';
   String _downloadedStr = '';
@@ -30,11 +34,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   // Device stats
   Map<String, dynamic> _stats = {};
   bool _statsLoading = true;
-
-  static const String _modelUrl =
-      "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm";
-
-  static const String _modelFile = "gemma-4-E2B-it.litertlm";
 
   // Animations
   late AnimationController _entranceController;
@@ -88,26 +87,36 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   }
 
   Future<void> _checkModels() async {
-    final downloaded = await _downloader.isModelDownloaded(_modelFile);
     final dir = await _downloader.getModelsDirectory();
-    final hasPart = await File('$dir/$_modelFile.part').exists();
-
+    final downloaded = <String, bool>{};
+    final partial = <String, bool>{};
+    for (final spec in ModelRegistry.all) {
+      final isDone = await _downloader.isModelDownloaded(spec.fileName);
+      downloaded[spec.fileName] = isDone;
+      partial[spec.fileName] =
+          !isDone && await File('$dir/${spec.fileName}.part').exists();
+    }
+    if (!mounted) return;
     setState(() {
-      _isModelDownloaded = downloaded;
-      _hasModelPartial = hasPart && !downloaded;
+      _isDownloaded
+        ..clear()
+        ..addAll(downloaded);
+      _hasPartial
+        ..clear()
+        ..addAll(partial);
     });
   }
 
-  void _startDownload() {
+  void _startDownload(ModelSpec spec) {
     setState(() {
-      _isDownloading = true;
+      _downloadingFileName = spec.fileName;
       _downloadProgress = 0.0;
       _downloadSpeed = 'Starting...';
     });
 
     _downloader.downloadModel(
-      url: _modelUrl,
-      fileName: _modelFile,
+      url: spec.url,
+      fileName: spec.fileName,
       onProgress: (progress, speed, downloaded, total) {
         if (mounted) {
           setState(() {
@@ -120,13 +129,13 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       },
       onComplete: () {
         if (mounted) {
-          setState(() => _isDownloading = false);
+          setState(() => _downloadingFileName = null);
           _checkModels();
         }
       },
       onError: (err) {
         if (mounted) {
-          setState(() => _isDownloading = false);
+          setState(() => _downloadingFileName = null);
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
             content: Text(err),
             behavior: SnackBarBehavior.floating,
@@ -139,14 +148,15 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 
   void _cancelDownload() {
     _downloader.cancelDownload();
-    setState(() => _isDownloading = false);
+    setState(() => _downloadingFileName = null);
     _checkModels();
   }
 
-  Future<void> _startChat() async {
+  Future<void> _startChat(ModelSpec spec) async {
     Navigator.pushAndRemoveUntil(
       context,
-      MaterialPageRoute(builder: (context) => ChatScreen(modelFileName: _modelFile)),
+      MaterialPageRoute(
+          builder: (context) => SplashScreen(modelFileName: spec.fileName)),
       (route) => false,
     );
   }
@@ -236,7 +246,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         const SizedBox(height: 12),
         Text(
           'Experience uncompromised privacy and zero latency. '
-          'Onyx Intelligence runs directly on your hardware, '
+          'The agent runs directly on your hardware, '
           'ensuring your data never leaves your device.',
           style: GoogleFonts.outfit(
             color: Colors.white54,
@@ -249,28 +259,26 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   }
 
   Widget _buildPerformanceCard() {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(16),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-        child: Container(
-          padding: const EdgeInsets.all(20),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(16),
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [
-                Colors.white.withValues(alpha: 0.07),
-                Colors.white.withValues(alpha: 0.03),
-              ],
-            ),
-            border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
-          ),
-          child: Column(
-            children: [
-              // Title row
-              Row(
+    // Gradient + border instead of BackdropFilter blur — the blur was the
+    // biggest GPU cost during cold start on mid-range Android.
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(16),
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            const Color(0xFF1A1A22),
+            const Color(0xFF14141A),
+          ],
+        ),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+      ),
+      child: Column(
+        children: [
+          // Title row
+          Row(
                 children: [
                   Container(
                     padding: const EdgeInsets.all(8),
@@ -349,9 +357,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
               ),
             ],
           ),
-        ),
-      ),
-    );
+        );
   }
 
   Widget _metricTile(String label, String value) {
@@ -389,57 +395,56 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   }
 
   Widget _buildModelCard({
-    required String name,
-    required String tag,
-    required String description,
-    required String size,
-    required String speed,
-    required bool isDownloaded,
-    required bool hasPartial,
+    required ModelSpec spec,
     required bool isPrimary,
   }) {
+    final isDownloaded = _isDownloaded[spec.fileName] ?? false;
+    final hasPartial = _hasPartial[spec.fileName] ?? false;
+    final isDownloading = _downloadingFileName == spec.fileName;
+    final isOtherDownloading =
+        _downloadingFileName != null && !isDownloading;
+
+    final tag = spec.supportsVision ? 'Vision' : 'Lite';
+    final speed = spec.supportsVision ? 'GPU · Vision' : 'GPU · Fast';
+
     String btnText = 'Download Model';
     if (isDownloaded) {
-        btnText = 'Start Chat';
+      btnText = 'Start Chat';
     } else if (hasPartial) {
-        btnText = 'Resume Download';
+      btnText = 'Resume Download';
     }
 
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(16),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 6, sigmaY: 6),
-        child: Container(
-          padding: const EdgeInsets.all(20),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(16),
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: isPrimary
-                  ? [
-                      const Color(0xFF3B82F6).withValues(alpha: 0.08),
-                      Colors.white.withValues(alpha: 0.03),
-                    ]
-                  : [
-                      Colors.white.withValues(alpha: 0.05),
-                      Colors.white.withValues(alpha: 0.02),
-                    ],
-            ),
-            border: Border.all(
-              color: isPrimary
-                  ? const Color(0xFF3B82F6).withValues(alpha: 0.25)
-                  : Colors.white.withValues(alpha: 0.08),
-            ),
-          ),
-          child: Column(
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(16),
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: isPrimary
+              ? [
+                  const Color(0xFF1A2440),
+                  const Color(0xFF14141A),
+                ]
+              : [
+                  const Color(0xFF1A1A22),
+                  const Color(0xFF14141A),
+                ],
+        ),
+        border: Border.all(
+          color: isPrimary
+              ? const Color(0xFF3B82F6).withValues(alpha: 0.25)
+              : Colors.white.withValues(alpha: 0.08),
+        ),
+      ),
+      child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               // Name row
               Row(
                 children: [
                   Text(
-                    name,
+                    spec.displayName,
                     style: GoogleFonts.outfit(
                       color: Colors.white,
                       fontSize: 18,
@@ -472,7 +477,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
               ),
               const SizedBox(height: 10),
               Text(
-                description,
+                spec.tagline,
                 style: GoogleFonts.outfit(
                   color: Colors.white54,
                   fontSize: 13,
@@ -483,27 +488,27 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
               // Chips
               Row(
                 children: [
-                  _chip(Icons.download_rounded, size),
+                  _chip(Icons.download_rounded, spec.sizeLabel),
                   const SizedBox(width: 10),
                   _chip(Icons.bolt_rounded, speed),
                 ],
               ),
               const SizedBox(height: 18),
               // Download progress or action button
-              if (_isDownloading)
+              if (isDownloading)
                 _buildDownloadProgress()
               else
                 SizedBox(
                   width: double.infinity,
                   height: 48,
                   child: ElevatedButton(
-                    onPressed: _isDownloading
+                    onPressed: isOtherDownloading
                         ? null
                         : () {
                             if (isDownloaded) {
-                              _startChat();
+                              _startChat(spec);
                             } else {
-                              _startDownload();
+                              _startDownload(spec);
                             }
                           },
                     style: ElevatedButton.styleFrom(
@@ -512,21 +517,43 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                           : isPrimary
                               ? const Color(0xFF3B82F6)
                               : Colors.white.withValues(alpha: 0.1),
-                      foregroundColor: isDownloaded || isPrimary ? Colors.white : Colors.white70,
+                      foregroundColor: isDownloaded || isPrimary
+                          ? Colors.white
+                          : Colors.white70,
+                      disabledBackgroundColor:
+                          Colors.white.withValues(alpha: 0.04),
+                      disabledForegroundColor: Colors.white24,
                       elevation: 0,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
                     ),
                     child: Text(
                       btnText,
-                      style: GoogleFonts.outfit(fontSize: 14, fontWeight: FontWeight.w600),
+                      style: GoogleFonts.outfit(
+                          fontSize: 14, fontWeight: FontWeight.w600),
                     ),
                   ),
                 ),
             ],
           ),
-        ),
-      ),
-    );
+        );
+  }
+
+  List<Widget> _buildModelCards() {
+    final recommended =
+        ModelRegistry.defaultForDevice(_stats['ramGB'] as int?);
+    final widgets = <Widget>[];
+    for (int i = 0; i < ModelRegistry.all.length; i++) {
+      final spec = ModelRegistry.all[i];
+      widgets.add(_animatedSection(
+        3,
+        _buildModelCard(spec: spec, isPrimary: spec.id == recommended.id),
+      ));
+      if (i < ModelRegistry.all.length - 1) {
+        widgets.add(const SizedBox(height: 14));
+      }
+    }
+    return widgets;
   }
 
   Widget _chip(IconData icon, String label) {
@@ -617,7 +644,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                   ),
                   const Spacer(),
                   Text(
-                    'Onyx Intelligence',
+                    'Local Agent',
                     style: GoogleFonts.outfit(
                       color: Colors.white60,
                       fontSize: 15,
@@ -659,23 +686,10 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                 ),
               ),
 
-              // Model card
-              _animatedSection(
-                3,
-                _buildModelCard(
-                  name: 'Gemma 4 E2B',
-                  tag: 'Primary',
-                  description:
-                      "Google's edge-optimized 2B model with native function calling. "
-                      "Handles real reasoning and multi-turn conversation — "
-                      "not just keyword matching.",
-                  size: '~2.59 GB',
-                  speed: 'GPU Accelerated',
-                  isDownloaded: _isModelDownloaded,
-                  hasPartial: _hasModelPartial,
-                  isPrimary: true,
-                ),
-              ),
+              // Model cards — one per registered spec. The heaviest spec the
+              // device's RAM clears is marked primary, so a Dimensity-700 /
+              // 4 GB phone gets the lite model recommended by default.
+              ..._buildModelCards(),
 
               const SizedBox(height: 24),
             ],
