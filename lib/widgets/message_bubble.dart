@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../models/chat_message.dart';
+import '../theme/app_theme.dart';
 
 class MessageBubble extends StatefulWidget {
   final ChatMessage message;
@@ -100,36 +101,35 @@ class _MessageBubbleState extends State<MessageBubble>
                           ),
                         message.isUser
                             ? Text(message.text,
-                                style: GoogleFonts.outfit(
-                                    fontSize: 17, color: Colors.white))
+                                style: AppTextStyles.body.copyWith(
+                                    fontSize: 16, color: Colors.white))
                             : MarkdownBody(
                                 data: message.text,
                                 selectable: true,
                                 styleSheet: MarkdownStyleSheet(
-                                  p: GoogleFonts.outfit(
-                                      fontSize: 17,
+                                  p: AppTextStyles.body.copyWith(
+                                      fontSize: 16,
                                       color: Colors.white,
                                       height: 1.5),
-                                  strong: GoogleFonts.outfit(
-                                      fontWeight: FontWeight.w700,
+                                  strong: AppTextStyles.bodyStrong.copyWith(
+                                      fontSize: 16,
                                       color: Colors.white),
                                   code: GoogleFonts.firaCode(
                                     backgroundColor:
                                         Colors.white.withValues(alpha: 0.1),
-                                    fontSize: 14,
+                                    fontSize: 13,
                                     color: Colors.white70,
                                   ),
                                 ),
                               ),
-                        // Inference stats
                         if (!message.isUser &&
                             (message.tps != null || message.toolName != null))
                           Padding(
                             padding: const EdgeInsets.only(top: 12.0),
                             child: Text(
                               '${message.toolName != null ? 'Tool: ${message.toolName} • ' : ''}${message.tps?.toStringAsFixed(1) ?? '0.0'} TPS • ${message.evalTime?.toStringAsFixed(1) ?? '0.0'}s • Local AI',
-                              style: GoogleFonts.inter(
-                                  fontSize: 11, color: Colors.white38),
+                              style: AppTextStyles.mono.copyWith(
+                                  fontSize: 10, color: Colors.white38),
                             ),
                           ),
                       ],

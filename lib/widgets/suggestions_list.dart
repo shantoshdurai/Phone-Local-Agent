@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
+import '../theme/app_theme.dart';
 
 class SuggestionsList extends StatelessWidget {
   final List<Map<String, dynamic>> suggestions;
@@ -29,11 +29,10 @@ class SuggestionsList extends StatelessWidget {
                   Expanded(
                     child: Text(
                       s['text'],
-                      style: GoogleFonts.outfit(
+                      style: AppTextStyles.body.copyWith(
                         color: Colors.white.withValues(alpha: 0.9),
-                        fontSize: 17,
+                        fontSize: 16,
                         fontWeight: FontWeight.w400,
-                        letterSpacing: -0.3,
                       ),
                     ),
                   ),

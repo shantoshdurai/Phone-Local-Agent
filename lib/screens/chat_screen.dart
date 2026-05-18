@@ -2,8 +2,8 @@ import 'dart:io';
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
+import '../theme/app_theme.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 import '../services/agent_service.dart';
@@ -46,8 +46,13 @@ class _ChatScreenState extends State<ChatScreen> {
   final ValueNotifier<String> _streamingText = ValueNotifier<String>('');
   final ValueNotifier<bool> _isStreaming = ValueNotifier<bool>(false);
   final ValueNotifier<int> _thinkingIndex = ValueNotifier<int>(0);
+  // Tracks "the model has been working on this turn for N seconds." Wired
+  // up next to the rotating thinking label so silent stalls (cold kernel,
+  // long prefill) are visible instead of looking frozen.
+  final ValueNotifier<int> _typingSeconds = ValueNotifier<int>(0);
   StreamSubscription? _tokenSub;
   Timer? _thinkingTimer;
+  Timer? _typingTimer;
   // Token streams arrive faster than the UI needs to animate-scroll.
   // We coalesce scroll requests into one per frame to keep the list smooth
   // on entry-tier GPUs.
@@ -87,6 +92,10 @@ class _ChatScreenState extends State<ChatScreen> {
   // Models the user has on disk right now — drives the agent picker.
   final Map<String, bool> _installedModels = {};
   ModelSpec get _currentSpec => ModelRegistry.byFileName(widget.modelFileName);
+  bool get _isCloud => widget.modelFileName == kCloudModelSentinel;
+  String get _headerName =>
+      _isCloud ? 'Gemini 2.5 Flash' : _currentSpec.displayName;
+  bool get _supportsVision => _isCloud || _currentSpec.supportsVision;
 
   @override
   void initState() {
@@ -177,7 +186,9 @@ class _ChatScreenState extends State<ChatScreen> {
 
   void _startThinkingAnimation() {
     _thinkingTimer?.cancel();
+    _typingTimer?.cancel();
     _thinkingIndex.value = 0;
+    _typingSeconds.value = 0;
     _thinkingTimer = Timer.periodic(const Duration(seconds: 3), (timer) {
       if (!mounted || !_isTyping || _isStreaming.value) {
         _stopThinkingAnimation();
@@ -186,22 +197,33 @@ class _ChatScreenState extends State<ChatScreen> {
       _thinkingIndex.value =
           (_thinkingIndex.value + 1) % _thinkingMessages.length;
     });
+    _typingTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted || !_isTyping) {
+        _stopThinkingAnimation();
+        return;
+      }
+      _typingSeconds.value = _typingSeconds.value + 1;
+    });
   }
 
   void _stopThinkingAnimation() {
     _thinkingTimer?.cancel();
     _thinkingTimer = null;
+    _typingTimer?.cancel();
+    _typingTimer = null;
   }
 
   @override
   void dispose() {
     _thinkingTimer?.cancel();
+    _typingTimer?.cancel();
     _tokenSub?.cancel();
     _textController.dispose();
     _scrollController.dispose();
     _streamingText.dispose();
     _isStreaming.dispose();
     _thinkingIndex.dispose();
+    _typingSeconds.dispose();
     WidgetsBinding.instance.removeObserver(_keyboardObserver);
     super.dispose();
   }
@@ -219,9 +241,13 @@ class _ChatScreenState extends State<ChatScreen> {
     try {
       await _agentService.initialize(widget.modelFileName);
       // Remember the model so next cold-start can boot straight into chat
-      // with this one instead of bouncing back to Home.
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('last_used_model_file', widget.modelFileName);
+      // with this one instead of bouncing back to Home. Cloud sentinel is
+      // not a real file — main.dart re-resolves the cloud route from the
+      // mode + key prefs, so don't persist it here.
+      if (!_isCloud) {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('last_used_model_file', widget.modelFileName);
+      }
       final sessions = await _dbService.getSessions();
 
       await _createNewChat(isInitial: true);
@@ -285,7 +311,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _pickImage() async {
-    if (!_currentSpec.supportsVision) {
+    if (!_supportsVision) {
       _promptVisionSwitch();
       return;
     }
@@ -314,19 +340,20 @@ class _ChatScreenState extends State<ChatScreen> {
         backgroundColor: const Color(0xFF1A1A1A),
         title: Text(
           'Images need ${visionSpec.displayName}',
-          style: GoogleFonts.outfit(color: Colors.white, fontWeight: FontWeight.w600),
+          style: AppTextStyles.title.copyWith(
+              color: Colors.white, fontSize: 18, fontWeight: FontWeight.w600),
         ),
         content: Text(
           isInstalled
               ? '${_currentSpec.displayName} is text-only. Switch to ${visionSpec.displayName} to attach images?'
               : '${_currentSpec.displayName} is text-only. ${visionSpec.displayName} (${visionSpec.sizeLabel}) supports vision — download it now?',
-          style: GoogleFonts.outfit(color: Colors.white70, height: 1.5),
+          style: AppTextStyles.body.copyWith(color: Colors.white70),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
             child: Text('Not now',
-                style: GoogleFonts.outfit(color: Colors.white54)),
+                style: AppTextStyles.bodyStrong.copyWith(color: Colors.white54)),
           ),
           TextButton(
             onPressed: () {
@@ -348,8 +375,9 @@ class _ChatScreenState extends State<ChatScreen> {
             },
             child: Text(
               isInstalled ? 'Switch' : 'Download',
-              style: GoogleFonts.outfit(
-                  color: const Color(0xFF60A5FA), fontWeight: FontWeight.w600),
+              style: AppTextStyles.bodyStrong.copyWith(
+                color: AppTheme.glassAccent,
+              ),
             ),
           ),
         ],
@@ -509,7 +537,43 @@ class _ChatScreenState extends State<ChatScreen> {
             onPressed: () => Scaffold.of(context).openDrawer(),
           ),
         ),
-        title: PopupMenuButton<String>(
+        title: _isCloud
+            ? Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    _headerName,
+                    style: AppTextStyles.title.copyWith(
+                      color: Colors.white,
+                      fontSize: 19,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: -0.3,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: AppTheme.glassMagenta.withValues(alpha: 0.18),
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(
+                        color: AppTheme.glassMagenta.withValues(alpha: 0.45),
+                      ),
+                    ),
+                    child: Text(
+                      'CLOUD',
+                      style: AppTextStyles.mono.copyWith(
+                        color: AppTheme.glassMagenta,
+                        fontSize: 9,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 1.0,
+                      ),
+                    ),
+                  ),
+                ],
+              )
+            : PopupMenuButton<String>(
           color: const Color(0xFF1E1E1E),
           offset: const Offset(0, 40),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -517,8 +581,8 @@ class _ChatScreenState extends State<ChatScreen> {
             mainAxisSize: MainAxisSize.min,
             children: [
               Text(
-                _currentSpec.displayName,
-                style: GoogleFonts.outfit(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w600, letterSpacing: -0.5),
+                _headerName,
+                style: AppTextStyles.title.copyWith(color: Colors.white, fontSize: 19, fontWeight: FontWeight.w600, letterSpacing: -0.3),
               ),
               const SizedBox(width: 4),
               const Icon(Icons.keyboard_arrow_down_rounded, color: Colors.white54, size: 20),
@@ -615,6 +679,7 @@ class _ChatScreenState extends State<ChatScreen> {
                                 isStreaming: _isStreaming,
                                 thinkingIndex: _thinkingIndex,
                                 thinkingMessages: _thinkingMessages,
+                                typingSeconds: _typingSeconds,
                               );
                             }
                             return MessageBubble(message: _messages[index]);
@@ -660,7 +725,7 @@ class _ChatScreenState extends State<ChatScreen> {
               children: [
                 const Icon(Icons.auto_awesome_rounded, color: Colors.white, size: 24),
                 const SizedBox(width: 12),
-                Text('Local Agent', style: GoogleFonts.outfit(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w600)),
+                Text('Local Agent', style: AppTextStyles.title.copyWith(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w600)),
               ],
             ),
           ),
@@ -774,11 +839,26 @@ class _ChatScreenState extends State<ChatScreen> {
                             textCapitalization: TextCapitalization.sentences,
                             onSubmitted: _handleSubmitted,
                             onTap: () => Future.delayed(const Duration(milliseconds: 300), _scrollToBottom),
-                            style: GoogleFonts.outfit(color: Colors.white, fontSize: 17),
+                            style: AppTextStyles.body.copyWith(
+                                color: Colors.white, fontSize: 16),
+                            cursorColor: Colors.white,
+                            // Override the global inputDecorationTheme so the
+                            // chat box doesn't get an outlined blue focus
+                            // ring on top of the rounded grey pill.
                             decoration: InputDecoration(
                               hintText: 'Ask Agent...',
-                              hintStyle: GoogleFonts.outfit(color: Colors.white.withValues(alpha: 0.4)),
+                              hintStyle: AppTextStyles.body.copyWith(
+                                color: Colors.white.withValues(alpha: 0.4),
+                                fontSize: 16,
+                              ),
                               border: InputBorder.none,
+                              enabledBorder: InputBorder.none,
+                              focusedBorder: InputBorder.none,
+                              disabledBorder: InputBorder.none,
+                              errorBorder: InputBorder.none,
+                              focusedErrorBorder: InputBorder.none,
+                              filled: false,
+                              isDense: true,
                               contentPadding: const EdgeInsets.symmetric(vertical: 12),
                             ),
                           ),
@@ -881,12 +961,14 @@ class _TypingIndicator extends StatelessWidget {
   final ValueListenable<bool> isStreaming;
   final ValueListenable<int> thinkingIndex;
   final List<String> thinkingMessages;
+  final ValueListenable<int> typingSeconds;
 
   const _TypingIndicator({
     required this.streamingText,
     required this.isStreaming,
     required this.thinkingIndex,
     required this.thinkingMessages,
+    required this.typingSeconds,
   });
 
   @override
@@ -911,8 +993,8 @@ class _TypingIndicator extends StatelessWidget {
                     Flexible(
                       child: Text(
                         text,
-                        style: GoogleFonts.outfit(
-                            fontSize: 17, color: Colors.white, height: 1.5),
+                        style: AppTextStyles.body.copyWith(
+                            fontSize: 16, color: Colors.white, height: 1.5),
                       ),
                     ),
                   ],
@@ -923,26 +1005,50 @@ class _TypingIndicator extends StatelessWidget {
               padding: const EdgeInsets.only(left: 4, top: 8, bottom: 8),
               child: ValueListenableBuilder<int>(
                 valueListenable: thinkingIndex,
-                builder: (context, idx, _) => Row(
-                  children: [
-                    SizedBox(
-                      width: 12,
-                      height: 12,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 1.5,
-                        color: Colors.white.withValues(alpha: 0.3),
+                builder: (context, idx, _) =>
+                    ValueListenableBuilder<int>(
+                  valueListenable: typingSeconds,
+                  builder: (context, secs, __) => Row(
+                    children: [
+                      SizedBox(
+                        width: 12,
+                        height: 12,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 1.5,
+                          color: Colors.white.withValues(alpha: 0.3),
+                        ),
                       ),
-                    ),
-                    const SizedBox(width: 10),
-                    Text(
-                      thinkingMessages[idx],
-                      style: GoogleFonts.outfit(
-                        fontSize: 13,
-                        color: Colors.white.withValues(alpha: 0.4),
-                        fontStyle: FontStyle.italic,
+                      const SizedBox(width: 10),
+                      Text(
+                        thinkingMessages[idx],
+                        style: AppTextStyles.small.copyWith(
+                          fontSize: 13,
+                          color: Colors.white.withValues(alpha: 0.4),
+                          fontStyle: FontStyle.italic,
+                        ),
                       ),
-                    ),
-                  ],
+                      if (secs > 0) ...[
+                        const SizedBox(width: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withValues(alpha: 0.06),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            '${secs}s',
+                            style: AppTextStyles.mono.copyWith(
+                              fontSize: 10,
+                              color: Colors.white.withValues(alpha: 0.55),
+                              fontWeight: FontWeight.w600,
+                              letterSpacing: 0.5,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
                 ),
               ),
             );

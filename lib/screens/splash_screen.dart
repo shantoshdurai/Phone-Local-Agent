@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../services/agent_service.dart';
@@ -18,12 +19,32 @@ class SplashScreen extends StatefulWidget {
 
 class _SplashScreenState extends State<SplashScreen> {
   String? _error;
+  String _stage = 'Loading model';
+  int _elapsed = 0;
+  Timer? _ticker;
+  StreamSubscription? _statusSub;
 
   @override
   void initState() {
     super.initState();
+    _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() => _elapsed += 1);
+    });
+    // Mirror AgentService status text (e.g. "Warming up...") so the user
+    // sees that the load is making progress, not stalled.
+    _statusSub = AgentService().statusStream.listen((s) {
+      if (!mounted || s.isEmpty) return;
+      setState(() => _stage = s.replaceAll('...', '').trim());
+    });
     // Defer one frame so the spinner paints before native init starts.
     WidgetsBinding.instance.addPostFrameCallback((_) => _loadModel());
+  }
+
+  @override
+  void dispose() {
+    _ticker?.cancel();
+    _statusSub?.cancel();
+    super.dispose();
   }
 
   Future<void> _loadModel() async {
@@ -65,16 +86,35 @@ class _SplashScreenState extends State<SplashScreen> {
                 ),
                 const SizedBox(height: 18),
                 Text(
-                  'Loading model…',
+                  '$_stage…',
                   style: GoogleFonts.outfit(
                     color: Colors.white70,
                     fontSize: 14,
                     fontWeight: FontWeight.w500,
                   ),
                 ),
-                const SizedBox(height: 4),
+                const SizedBox(height: 8),
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.06),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    '${_elapsed}s',
+                    style: GoogleFonts.jetBrainsMono(
+                      color: Colors.white.withValues(alpha: 0.55),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
                 Text(
-                  'First open can take a few seconds',
+                  'First open can take 15–30s — the GPU kernels are compiling.',
+                  textAlign: TextAlign.center,
                   style: GoogleFonts.outfit(
                     color: Colors.white.withValues(alpha: 0.32),
                     fontSize: 11,

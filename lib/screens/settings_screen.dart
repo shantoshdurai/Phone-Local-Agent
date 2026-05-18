@@ -1,11 +1,20 @@
-
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
+import 'package:flutter_animate/flutter_animate.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import '../services/agent_mode.dart';
 import '../services/device_service.dart';
 import '../services/model_downloader_service.dart';
 import '../services/model_registry.dart';
+import '../theme/app_theme.dart';
+import '../widgets/glass_widgets.dart';
+import 'api_key_setup_screen.dart';
 import 'home_screen.dart';
+import 'intro_screen.dart';
 
+/// Settings — visual language ported from ClassNow (Fraunces title,
+/// Inter body, JetBrains Mono labels, GlassCard surfaces). Adds the
+/// new "Backend" section that exposes the local-vs-cloud choice and
+/// the Gemini API key.
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
 
@@ -13,58 +22,31 @@ class SettingsScreen extends StatefulWidget {
   State<SettingsScreen> createState() => _SettingsScreenState();
 }
 
-class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProviderStateMixin {
+class _SettingsScreenState extends State<SettingsScreen> {
   final DeviceService _deviceService = DeviceService();
   final ModelDownloaderService _downloader = ModelDownloaderService();
 
   Map<String, dynamic> _stats = {};
   bool _statsLoading = true;
   final Map<String, bool> _modelReady = {};
-
-  late AnimationController _entranceController;
-  late List<Animation<double>> _fadeAnims;
-  late List<Animation<Offset>> _slideAnims;
+  AgentMode _mode = AgentMode.local;
+  String? _apiKeyMasked;
 
   @override
   void initState() {
     super.initState();
     _loadData();
-
-    _entranceController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 1000),
-    );
-
-    _fadeAnims = List.generate(4, (i) {
-      final start = i * 0.15;
-      final end = (start + 0.4).clamp(0.0, 1.0);
-      return Tween<double>(begin: 0.0, end: 1.0).animate(
-        CurvedAnimation(parent: _entranceController, curve: Interval(start, end, curve: Curves.easeOut)),
-      );
-    });
-    _slideAnims = List.generate(4, (i) {
-      final start = i * 0.15;
-      final end = (start + 0.4).clamp(0.0, 1.0);
-      return Tween<Offset>(begin: const Offset(0, 0.12), end: Offset.zero).animate(
-        CurvedAnimation(parent: _entranceController, curve: Interval(start, end, curve: Curves.easeOut)),
-      );
-    });
-
-    _entranceController.forward();
-  }
-
-  @override
-  void dispose() {
-    _entranceController.dispose();
-    super.dispose();
   }
 
   Future<void> _loadData() async {
     final stats = await _deviceService.getQuickStats();
     final ready = <String, bool>{};
     for (final spec in ModelRegistry.all) {
-      ready[spec.fileName] = await _downloader.isModelDownloaded(spec.fileName);
+      ready[spec.fileName] =
+          await _downloader.isModelDownloaded(spec.fileName);
     }
+    final mode = await AgentModeStore.read() ?? AgentMode.local;
+    final key = await AgentModeStore.readApiKey();
     if (mounted) {
       setState(() {
         _stats = stats;
@@ -72,77 +54,292 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
         _modelReady
           ..clear()
           ..addAll(ready);
+        _mode = mode;
+        _apiKeyMasked = (key != null && key.length > 4)
+            ? '••••${key.substring(key.length - 4)}'
+            : null;
       });
     }
   }
 
-  Widget _animatedSection(int index, Widget child) {
-    return FadeTransition(
-      opacity: _fadeAnims[index],
-      child: SlideTransition(position: _slideAnims[index], child: child),
+  Future<void> _toggleMode() async {
+    final next = _mode == AgentMode.local ? AgentMode.cloud : AgentMode.local;
+    await AgentModeStore.write(next);
+    if (!mounted) return;
+    setState(() => _mode = next);
+    if (next == AgentMode.cloud && _apiKeyMasked == null) {
+      await Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) => const ApiKeySetupScreen(),
+      ));
+      _loadData();
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(
+          'Switched to ${next == AgentMode.local ? 'local' : 'cloud'} mode. Restart chat to apply.',
+          style: AppTextStyles.body.copyWith(color: AppTheme.glassInk),
+        ),
+        backgroundColor: AppTheme.glassBg2,
+        behavior: SnackBarBehavior.floating,
+      ));
+    }
+  }
+
+  Future<void> _editApiKey() async {
+    await Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => const ApiKeySetupScreen(),
+    ));
+    _loadData();
+  }
+
+  String _capitalize(String s) =>
+      s.isEmpty ? s : s[0].toUpperCase() + s.substring(1);
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: AppTheme.glassBg,
+      extendBodyBehindAppBar: true,
+      body: Stack(
+        children: [
+          const AuroraBackground(),
+          SafeArea(
+            child: SingleChildScrollView(
+              physics: const BouncingScrollPhysics(),
+              padding: const EdgeInsets.fromLTRB(20, 8, 20, 32),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _topBar()
+                      .animate()
+                      .fadeIn(duration: 400.ms),
+                  const SizedBox(height: 24),
+                  _sectionLabel('BACKEND'),
+                  _buildBackendSection()
+                      .animate()
+                      .fadeIn(delay: 80.ms)
+                      .moveY(begin: 12, end: 0),
+                  const SizedBox(height: 24),
+                  _sectionLabel('LOCAL MODELS'),
+                  _buildModelsSection()
+                      .animate()
+                      .fadeIn(delay: 160.ms)
+                      .moveY(begin: 12, end: 0),
+                  const SizedBox(height: 24),
+                  _sectionLabel('DEVICE'),
+                  _buildDeviceSection()
+                      .animate()
+                      .fadeIn(delay: 240.ms)
+                      .moveY(begin: 12, end: 0),
+                  const SizedBox(height: 24),
+                  _sectionLabel('STORAGE'),
+                  _buildStorageSection()
+                      .animate()
+                      .fadeIn(delay: 320.ms)
+                      .moveY(begin: 12, end: 0),
+                  const SizedBox(height: 24),
+                  _sectionLabel('ONBOARDING'),
+                  _buildOnboardingSection()
+                      .animate()
+                      .fadeIn(delay: 400.ms)
+                      .moveY(begin: 12, end: 0),
+                  const SizedBox(height: 24),
+                  _sectionLabel('ABOUT'),
+                  _buildAboutSection()
+                      .animate()
+                      .fadeIn(delay: 480.ms)
+                      .moveY(begin: 12, end: 0),
+                  const SizedBox(height: 24),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
-  Widget _glassCard({required Widget child}) {
-    // Plain gradient — replaces BackdropFilter blur for performance.
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(16),
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [
-            const Color(0xFF1A1A22),
-            const Color(0xFF14141A),
-          ],
+  Widget _topBar() {
+    return Row(
+      children: [
+        IconButton(
+          icon: const Icon(Icons.arrow_back_ios_rounded,
+              color: AppTheme.glassInk2, size: 20),
+          onPressed: () => Navigator.pop(context),
         ),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
-      ),
-      child: child,
+        const Spacer(),
+        Text(
+          'Settings',
+          style: AppTextStyles.title.copyWith(
+            color: AppTheme.glassInk,
+            fontSize: 22,
+          ),
+        ),
+        const Spacer(),
+        const SizedBox(width: 48),
+      ],
     );
   }
 
   Widget _sectionLabel(String text) {
     return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.only(bottom: 12, left: 4),
       child: Text(
         text,
-        style: GoogleFonts.outfit(
-          color: Colors.white30,
-          fontSize: 11,
-          fontWeight: FontWeight.w700,
-          letterSpacing: 1.5,
+        style: AppTextStyles.mono.copyWith(
+          color: AppTheme.glassMuted,
+          fontSize: 10,
         ),
       ),
     );
   }
 
-  // ─── Model Management Section ───
-  Widget _buildModelsSection() {
-    return _glassCard(
+  // ─── Backend section (new) ───
+  Widget _buildBackendSection() {
+    final isCloud = _mode == AgentMode.cloud;
+    final accent = isCloud ? AppTheme.glassMagenta : AppTheme.glassAccent;
+    return GlassCard(
+      blur: 25,
+      borderRadius: BorderRadius.circular(20),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF3B82F6).withValues(alpha: 0.15),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: const Icon(Icons.memory_rounded, color: Color(0xFF3B82F6), size: 18),
-              ),
-              const SizedBox(width: 12),
-              Text(
-                'Downloaded Models',
-                style: GoogleFonts.outfit(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600),
-              ),
-            ],
+          _sectionHeader(
+            icon: isCloud ? Icons.cloud_rounded : Icons.smartphone_rounded,
+            title: 'Mode',
+            color: accent,
           ),
-          const SizedBox(height: 18),
+          const SizedBox(height: 14),
+          Material(
+            color: Colors.transparent,
+            child: InkWell(
+              borderRadius: BorderRadius.circular(14),
+              onTap: _toggleMode,
+              child: Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: accent.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(
+                    color: accent.withValues(alpha: 0.4),
+                    width: 1,
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            isCloud ? 'Cloud (Gemini)' : 'Local (on-device)',
+                            style: AppTextStyles.bodyStrong.copyWith(
+                              color: AppTheme.glassInk,
+                              fontSize: 15,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            isCloud
+                                ? 'Smarter, uses your API key.'
+                                : 'Private, runs on this device.',
+                            style: AppTextStyles.small.copyWith(
+                              color: AppTheme.glassInk2.withValues(alpha: 0.7),
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Container(
+                      padding:
+                          const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(8),
+                        color: accent.withValues(alpha: 0.18),
+                      ),
+                      child: Text(
+                        'TAP TO SWITCH',
+                        style: AppTextStyles.mono.copyWith(
+                          color: accent,
+                          fontSize: 9,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          if (isCloud) ...[
+            const SizedBox(height: 12),
+            Material(
+              color: Colors.transparent,
+              child: InkWell(
+                borderRadius: BorderRadius.circular(14),
+                onTap: _editApiKey,
+                child: Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.04),
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: AppTheme.glassBorder),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(Icons.key_rounded,
+                          size: 18, color: AppTheme.glassInk2),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Gemini API key',
+                              style: AppTextStyles.bodyStrong.copyWith(
+                                color: AppTheme.glassInk,
+                                fontSize: 14,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              _apiKeyMasked ?? 'Not set — tap to add',
+                              style: AppTextStyles.small.copyWith(
+                                color: _apiKeyMasked != null
+                                    ? AppTheme.accentSuccess
+                                    : AppTheme.accentError,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const Icon(Icons.chevron_right_rounded,
+                          color: AppTheme.glassMuted),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  // ─── Local models section ───
+  Widget _buildModelsSection() {
+    return GlassCard(
+      blur: 25,
+      borderRadius: BorderRadius.circular(20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _sectionHeader(
+            icon: Icons.memory_rounded,
+            title: 'Downloaded models',
+            color: AppTheme.glassAccent,
+          ),
+          const SizedBox(height: 16),
           for (int i = 0; i < ModelRegistry.all.length; i++) ...[
             _modelRow(
               ModelRegistry.all[i].displayName,
@@ -159,15 +356,22 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
               onPressed: () {
                 Navigator.push(
                   context,
-                  MaterialPageRoute(builder: (context) => const HomeScreen()),
+                  MaterialPageRoute(builder: (_) => const HomeScreen()),
                 );
               },
               icon: const Icon(Icons.download_rounded, size: 16),
-              label: Text('Manage Models', style: GoogleFonts.outfit(fontWeight: FontWeight.w600, fontSize: 13)),
+              label: Text(
+                'Manage models',
+                style: AppTextStyles.bodyStrong.copyWith(fontSize: 13),
+              ),
               style: OutlinedButton.styleFrom(
-                foregroundColor: const Color(0xFF93C5FD),
-                side: BorderSide(color: const Color(0xFF3B82F6).withValues(alpha: 0.3)),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                foregroundColor: AppTheme.glassAccent,
+                side: BorderSide(
+                  color: AppTheme.glassAccent.withValues(alpha: 0.3),
+                ),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
                 padding: const EdgeInsets.symmetric(vertical: 12),
               ),
             ),
@@ -186,20 +390,35 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
             children: [
               Row(
                 children: [
-                  Text(name, style: GoogleFonts.outfit(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600)),
+                  Text(
+                    name,
+                    style: AppTextStyles.bodyStrong
+                        .copyWith(color: AppTheme.glassInk, fontSize: 14),
+                  ),
                   const SizedBox(width: 8),
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 6, vertical: 2),
                     decoration: BoxDecoration(
                       color: Colors.white.withValues(alpha: 0.06),
                       borderRadius: BorderRadius.circular(4),
                     ),
-                    child: Text(tag, style: GoogleFonts.outfit(color: Colors.white38, fontSize: 10, fontWeight: FontWeight.w600)),
+                    child: Text(
+                      tag,
+                      style: AppTextStyles.mono.copyWith(
+                        color: AppTheme.glassMuted,
+                        fontSize: 9,
+                      ),
+                    ),
                   ),
                 ],
               ),
               const SizedBox(height: 4),
-              Text(size, style: GoogleFonts.outfit(color: Colors.white30, fontSize: 12)),
+              Text(
+                size,
+                style: AppTextStyles.small
+                    .copyWith(color: AppTheme.glassMuted, fontSize: 12),
+              ),
             ],
           ),
         ),
@@ -207,7 +426,7 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
           decoration: BoxDecoration(
             color: downloaded
-                ? const Color(0xFF34D399).withValues(alpha: 0.12)
+                ? AppTheme.accentSuccess.withValues(alpha: 0.12)
                 : Colors.white.withValues(alpha: 0.05),
             borderRadius: BorderRadius.circular(8),
           ),
@@ -215,17 +434,22 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
             mainAxisSize: MainAxisSize.min,
             children: [
               Icon(
-                downloaded ? Icons.check_circle_rounded : Icons.cloud_download_outlined,
+                downloaded
+                    ? Icons.check_circle_rounded
+                    : Icons.cloud_download_outlined,
                 size: 14,
-                color: downloaded ? const Color(0xFF34D399) : Colors.white30,
+                color: downloaded
+                    ? AppTheme.accentSuccess
+                    : AppTheme.glassMuted,
               ),
               const SizedBox(width: 4),
               Text(
-                downloaded ? 'Ready' : 'Not Downloaded',
-                style: GoogleFonts.outfit(
-                  color: downloaded ? const Color(0xFF34D399) : Colors.white30,
+                downloaded ? 'Ready' : 'Not downloaded',
+                style: AppTextStyles.bodyStrong.copyWith(
+                  color: downloaded
+                      ? AppTheme.accentSuccess
+                      : AppTheme.glassMuted,
                   fontSize: 11,
-                  fontWeight: FontWeight.w600,
                 ),
               ),
             ],
@@ -235,43 +459,40 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
     );
   }
 
-  // ─── Device Info Section ───
+  // ─── Device info ───
   Widget _buildDeviceSection() {
-    return _glassCard(
+    return GlassCard(
+      blur: 25,
+      borderRadius: BorderRadius.circular(20),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF8B5CF6).withValues(alpha: 0.15),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: const Icon(Icons.phone_android_rounded, color: Color(0xFF8B5CF6), size: 18),
-              ),
-              const SizedBox(width: 12),
-              Text(
-                'Device Information',
-                style: GoogleFonts.outfit(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600),
-              ),
-            ],
+          _sectionHeader(
+            icon: Icons.phone_android_rounded,
+            title: 'Device information',
+            color: AppTheme.glassMagenta,
           ),
-          const SizedBox(height: 18),
+          const SizedBox(height: 16),
           if (_statsLoading)
             const Center(
               child: Padding(
                 padding: EdgeInsets.all(16),
-                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white24),
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: AppTheme.glassMuted,
+                ),
               ),
             )
           else ...[
-            _infoRow(Icons.devices_rounded, 'Device', '${_capitalize(_stats['brand'] ?? '?')} ${_stats['model'] ?? ''}'),
-            _infoRow(Icons.android_rounded, 'Operating System', _stats['os'] ?? 'Unknown'),
-            _infoRow(Icons.memory_rounded, 'RAM', '${_stats['ramGB'] ?? '?'} GB'),
-            _infoRow(Icons.developer_board_rounded, 'CPU Threads', '${_stats['cpuCores'] ?? '?'}'),
-            _infoRow(Icons.battery_charging_full_rounded, 'Battery', '${_stats['battery'] ?? '?'}%'),
+            _infoRow(Icons.devices_rounded, 'Device',
+                '${_capitalize(_stats['brand'] ?? '?')} ${_stats['model'] ?? ''}'),
+            _infoRow(Icons.android_rounded, 'OS', _stats['os'] ?? 'Unknown'),
+            _infoRow(Icons.memory_rounded, 'RAM',
+                '${_stats['ramGB'] ?? '?'} GB'),
+            _infoRow(Icons.developer_board_rounded, 'CPU threads',
+                '${_stats['cpuCores'] ?? '?'}'),
+            _infoRow(Icons.battery_charging_full_rounded, 'Battery',
+                '${_stats['battery'] ?? '?'}%'),
             _infoRow(
               Icons.storage_rounded,
               'Storage',
@@ -285,25 +506,29 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
     );
   }
 
-  String _capitalize(String s) {
-    if (s.isEmpty) return s;
-    return s[0].toUpperCase() + s.substring(1);
-  }
-
   Widget _infoRow(IconData icon, String label, String value) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 14),
       child: Row(
         children: [
-          Icon(icon, color: Colors.white24, size: 18),
+          Icon(icon, color: AppTheme.glassMuted, size: 18),
           const SizedBox(width: 12),
           Expanded(
-            child: Text(label, style: GoogleFonts.outfit(color: Colors.white38, fontSize: 13)),
+            child: Text(
+              label,
+              style: AppTextStyles.body.copyWith(
+                color: AppTheme.glassInk2,
+                fontSize: 13,
+              ),
+            ),
           ),
           Flexible(
             child: Text(
               value,
-              style: GoogleFonts.outfit(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w500),
+              style: AppTextStyles.bodyStrong.copyWith(
+                color: AppTheme.glassInk,
+                fontSize: 13,
+              ),
               textAlign: TextAlign.right,
               overflow: TextOverflow.ellipsis,
             ),
@@ -313,11 +538,10 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
     );
   }
 
-  // ─── Storage Section ───
+  // ─── Storage ───
   Widget _buildStorageSection() {
     final totalMB = _stats['storageTotal'] as double?;
     final freeMB = _stats['storageFree'] as double?;
-
     double usedFraction = 0;
     double modelUsageGB = 0;
     for (final spec in ModelRegistry.all) {
@@ -325,34 +549,21 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
         modelUsageGB += spec.sizeMB / 1024.0;
       }
     }
-
     if (totalMB != null && freeMB != null) {
       usedFraction = 1.0 - (freeMB / totalMB);
     }
-
-    return _glassCard(
+    return GlassCard(
+      blur: 25,
+      borderRadius: BorderRadius.circular(20),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFFBBF24).withValues(alpha: 0.15),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: const Icon(Icons.pie_chart_rounded, color: Color(0xFFFBBF24), size: 18),
-              ),
-              const SizedBox(width: 12),
-              Text(
-                'Storage Usage',
-                style: GoogleFonts.outfit(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600),
-              ),
-            ],
+          _sectionHeader(
+            icon: Icons.pie_chart_rounded,
+            title: 'Storage usage',
+            color: const Color(0xFFFBBF24),
           ),
-          const SizedBox(height: 18),
-          // Progress bar
+          const SizedBox(height: 16),
           ClipRRect(
             borderRadius: BorderRadius.circular(6),
             child: SizedBox(
@@ -361,7 +572,9 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
                 value: usedFraction.clamp(0.0, 1.0),
                 backgroundColor: Colors.white.withValues(alpha: 0.08),
                 valueColor: AlwaysStoppedAnimation<Color>(
-                  usedFraction > 0.85 ? const Color(0xFFF87171) : const Color(0xFF3B82F6),
+                  usedFraction > 0.85
+                      ? AppTheme.accentError
+                      : AppTheme.glassAccent,
                 ),
               ),
             ),
@@ -373,12 +586,16 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
               Text(
                 totalMB != null
                     ? '${((totalMB - (freeMB ?? 0)) / 1024).toStringAsFixed(1)} GB used'
-                    : 'Calculating...',
-                style: GoogleFonts.outfit(color: Colors.white38, fontSize: 12),
+                    : 'Calculating…',
+                style: AppTextStyles.small
+                    .copyWith(color: AppTheme.glassInk2, fontSize: 12),
               ),
               Text(
-                totalMB != null ? '${(totalMB / 1024).toStringAsFixed(1)} GB total' : '',
-                style: GoogleFonts.outfit(color: Colors.white38, fontSize: 12),
+                totalMB != null
+                    ? '${(totalMB / 1024).toStringAsFixed(1)} GB total'
+                    : '',
+                style: AppTextStyles.small
+                    .copyWith(color: AppTheme.glassInk2, fontSize: 12),
               ),
             ],
           ),
@@ -391,13 +608,19 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
             ),
             child: Row(
               children: [
-                const Icon(Icons.folder_rounded, color: Colors.white24, size: 16),
+                const Icon(Icons.folder_rounded,
+                    color: AppTheme.glassMuted, size: 16),
                 const SizedBox(width: 10),
-                Text('AI Models', style: GoogleFonts.outfit(color: Colors.white54, fontSize: 13)),
+                Text(
+                  'AI models',
+                  style: AppTextStyles.body
+                      .copyWith(color: AppTheme.glassInk2, fontSize: 13),
+                ),
                 const Spacer(),
                 Text(
                   '${modelUsageGB.toStringAsFixed(2)} GB',
-                  style: GoogleFonts.outfit(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600),
+                  style: AppTextStyles.bodyStrong
+                      .copyWith(color: AppTheme.glassInk, fontSize: 13),
                 ),
               ],
             ),
@@ -407,38 +630,107 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
     );
   }
 
-  // ─── About Section ───
-  Widget _buildAboutSection() {
-    return _glassCard(
+  // ─── Onboarding (replay) ───
+  Widget _buildOnboardingSection() {
+    return GlassCard(
+      blur: 25,
+      borderRadius: BorderRadius.circular(20),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF34D399).withValues(alpha: 0.15),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: const Icon(Icons.info_outline_rounded, color: Color(0xFF34D399), size: 18),
-              ),
-              const SizedBox(width: 12),
-              Text(
-                'About',
-                style: GoogleFonts.outfit(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600),
-              ),
-            ],
+          _sectionHeader(
+            icon: Icons.replay_rounded,
+            title: 'Replay intro',
+            color: AppTheme.glassCyan,
           ),
-          const SizedBox(height: 18),
-          _aboutRow('App Version', '1.0.0'),
-          _aboutRow('Engine', 'LiteRT-LM (GPU)'),
-          _aboutRow('Model', 'Gemma 4 E2B'),
+          const SizedBox(height: 14),
+          Text(
+            'Step back through the welcome → permissions → mode selection flow. Your API key, mode, and downloaded models are kept — nothing is wiped.',
+            style: AppTextStyles.small.copyWith(
+              color: AppTheme.glassInk2.withValues(alpha: 0.75),
+              fontSize: 12,
+              height: 1.4,
+            ),
+          ),
+          const SizedBox(height: 14),
+          Material(
+            color: Colors.transparent,
+            child: InkWell(
+              borderRadius: BorderRadius.circular(14),
+              onTap: _replayIntro,
+              child: Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: AppTheme.glassCyan.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(
+                    color: AppTheme.glassCyan.withValues(alpha: 0.4),
+                    width: 1,
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.play_arrow_rounded,
+                        color: AppTheme.glassCyan, size: 18),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Show me the intro again',
+                      style: AppTextStyles.bodyStrong.copyWith(
+                        color: AppTheme.glassCyan,
+                        fontSize: 14,
+                      ),
+                    ),
+                    const Spacer(),
+                    const Icon(Icons.chevron_right_rounded,
+                        color: AppTheme.glassMuted),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _replayIntro() async {
+    // Just clear the "you've seen the intro" flag — leave mode + key alone
+    // so the user lands back where they were once they finish walking
+    // through the screens again.
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('onboarding_seen_v1');
+    if (!mounted) return;
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const IntroScreen()),
+      (_) => false,
+    );
+  }
+
+  // ─── About ───
+  Widget _buildAboutSection() {
+    return GlassCard(
+      blur: 25,
+      borderRadius: BorderRadius.circular(20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _sectionHeader(
+            icon: Icons.info_outline_rounded,
+            title: 'About',
+            color: AppTheme.accentSuccess,
+          ),
+          const SizedBox(height: 16),
+          _aboutRow('App version', '1.0.0'),
+          _aboutRow('Local engine', 'LiteRT-LM (GPU)'),
+          _aboutRow('Cloud engine', 'google_generative_ai'),
           Padding(
             padding: const EdgeInsets.only(top: 4),
             child: Text(
-              'Powered by Gemma 4 · 100% On-Device',
-              style: GoogleFonts.outfit(color: Colors.white24, fontSize: 11),
+              'Powered by Gemma + Gemini · BYO-key',
+              style: AppTextStyles.small.copyWith(
+                color: AppTheme.glassMuted,
+                fontSize: 11,
+              ),
             ),
           ),
         ],
@@ -452,70 +744,45 @@ class _SettingsScreenState extends State<SettingsScreen> with SingleTickerProvid
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Text(label, style: GoogleFonts.outfit(color: Colors.white38, fontSize: 13)),
-          Text(value, style: GoogleFonts.outfit(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w500)),
+          Text(
+            label,
+            style: AppTextStyles.body
+                .copyWith(color: AppTheme.glassInk2, fontSize: 13),
+          ),
+          Text(
+            value,
+            style: AppTextStyles.bodyStrong
+                .copyWith(color: AppTheme.glassInk, fontSize: 13),
+          ),
         ],
       ),
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFF0A0A0F),
-      body: SafeArea(
-        child: SingleChildScrollView(
-          physics: const BouncingScrollPhysics(),
-          padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Top bar
-              Row(
-                children: [
-                  IconButton(
-                    icon: const Icon(Icons.arrow_back_ios_rounded, color: Colors.white54, size: 20),
-                    onPressed: () => Navigator.pop(context),
-                  ),
-                  const Spacer(),
-                  Text(
-                    'Settings',
-                    style: GoogleFonts.outfit(
-                      color: Colors.white,
-                      fontSize: 17,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  const Spacer(),
-                  const SizedBox(width: 48),
-                ],
-              ),
-              const SizedBox(height: 28),
-
-              // Models
-              _animatedSection(0, _sectionLabel('MODELS')),
-              _animatedSection(0, _buildModelsSection()),
-              const SizedBox(height: 24),
-
-              // Device
-              _animatedSection(1, _sectionLabel('DEVICE')),
-              _animatedSection(1, _buildDeviceSection()),
-              const SizedBox(height: 24),
-
-              // Storage
-              _animatedSection(2, _sectionLabel('STORAGE')),
-              _animatedSection(2, _buildStorageSection()),
-              const SizedBox(height: 24),
-
-              // About
-              _animatedSection(3, _sectionLabel('ABOUT')),
-              _animatedSection(3, _buildAboutSection()),
-
-              const SizedBox(height: 24),
-            ],
+  Widget _sectionHeader({
+    required IconData icon,
+    required String title,
+    required Color color,
+  }) {
+    return Row(
+      children: [
+        Container(
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: 0.15),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Icon(icon, color: color, size: 18),
+        ),
+        const SizedBox(width: 12),
+        Text(
+          title,
+          style: AppTextStyles.title.copyWith(
+            color: AppTheme.glassInk,
+            fontSize: 17,
           ),
         ),
-      ),
+      ],
     );
   }
 }

@@ -1,11 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'screens/api_key_setup_screen.dart';
 import 'screens/home_screen.dart';
+import 'screens/intro_screen.dart';
 import 'screens/splash_screen.dart';
-import 'screens/onboarding_screen.dart';
+import 'services/agent_mode.dart';
+import 'services/agent_service.dart';
 import 'services/model_downloader_service.dart';
 import 'services/model_registry.dart';
+import 'theme/app_theme.dart';
 
 const _kOnboardingSeenKey = 'onboarding_seen_v1';
 const _kLastModelKey = 'last_used_model_file';
@@ -13,28 +17,39 @@ const _kLastModelKey = 'last_used_model_file';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Keep the boot path lean — only do the cheap, sync-ish work needed to
-  // pick the first route. FlutterGemma + FlutterBackground native init are
+  // Keep the boot path lean — only the cheap sync-ish work needed to pick
+  // the first route. FlutterGemma + FlutterBackground native init are
   // deferred into AgentService and run lazily the first time chat opens.
   await dotenv.load(fileName: ".env").catchError((_) {});
 
   final prefs = await SharedPreferences.getInstance();
   final onboardingSeen = prefs.getBool(_kOnboardingSeenKey) ?? false;
+  final mode = await AgentModeStore.read();
+  final apiKey = await AgentModeStore.readApiKey();
   final lastModel = prefs.getString(_kLastModelKey);
 
-  final downloader = ModelDownloaderService();
-
-  // Prefer the model the user last opened; otherwise jump into whichever
-  // registered model is already downloaded. If none, fall through to Home.
   String? initialModel;
-  if (lastModel != null &&
-      await downloader.isModelDownloaded(lastModel)) {
-    initialModel = lastModel;
-  } else {
-    for (final spec in ModelRegistry.all) {
-      if (await downloader.isModelDownloaded(spec.fileName)) {
-        initialModel = spec.fileName;
-        break;
+
+  if (onboardingSeen) {
+    if (mode == AgentMode.cloud && apiKey != null) {
+      // Skip the local downloader path entirely — splash will init Gemini.
+      initialModel = kCloudModelSentinel;
+    } else if (mode == AgentMode.cloud) {
+      // Cloud picked but key missing — handled below by routing to setup.
+      initialModel = null;
+    } else {
+      // Local (or unset, which we treat as local for backwards-compat with
+      // installs from before the mode picker existed).
+      final downloader = ModelDownloaderService();
+      if (lastModel != null && await downloader.isModelDownloaded(lastModel)) {
+        initialModel = lastModel;
+      } else {
+        for (final spec in ModelRegistry.all) {
+          if (await downloader.isModelDownloaded(spec.fileName)) {
+            initialModel = spec.fileName;
+            break;
+          }
+        }
       }
     }
   }
@@ -42,22 +57,30 @@ void main() async {
   runApp(MyApp(
     initialModel: initialModel,
     showOnboarding: !onboardingSeen,
+    cloudNeedsKey: onboardingSeen && mode == AgentMode.cloud && apiKey == null,
   ));
 }
 
 class MyApp extends StatelessWidget {
   final String? initialModel;
   final bool showOnboarding;
-  const MyApp({super.key, this.initialModel, this.showOnboarding = false});
+  final bool cloudNeedsKey;
+  const MyApp({
+    super.key,
+    this.initialModel,
+    this.showOnboarding = false,
+    this.cloudNeedsKey = false,
+  });
 
   Widget _resolveHome() {
     if (showOnboarding) {
-      return OnboardingScreen(
-        onFinished: () async {
-          final prefs = await SharedPreferences.getInstance();
-          await prefs.setBool(_kOnboardingSeenKey, true);
-        },
-      );
+      return const IntroScreen();
+    }
+    if (cloudNeedsKey) {
+      // Mode is cloud but no key on disk — drop straight into the key
+      // entry screen. fromOnboarding=false so saving pops back; we then
+      // catch them on the next launch via the splash path.
+      return const ApiKeySetupScreen(fromOnboarding: false);
     }
     if (initialModel != null) {
       return SplashScreen(modelFileName: initialModel!);
@@ -70,11 +93,7 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: 'Local Agent',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        scaffoldBackgroundColor: Colors.black,
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple, brightness: Brightness.dark),
-        useMaterial3: true,
-      ),
+      theme: AppTheme.darkTheme,
       home: _resolveHome(),
     );
   }

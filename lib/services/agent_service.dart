@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:io';
 import 'dart:async';
 import 'dart:typed_data';
@@ -8,41 +7,38 @@ import 'package:flutter_gemma/flutter_gemma.dart' hide ModelSpec;
 import 'package:flutter_background/flutter_background.dart';
 import 'model_downloader_service.dart';
 import 'model_registry.dart';
-import 'device_service.dart';
-import 'file_service.dart';
 import 'database_service.dart';
-import 'app_service.dart';
-import 'utility_service.dart';
-import 'personal_service.dart';
-import 'search_service.dart';
+import 'agent_response.dart';
+import 'gemini_service.dart';
+import 'tool_runtime.dart';
 
-class AgentResponse {
-  final String text;
-  final String modelName;
-  final int retryCount;
-  final double? tps;
-  final double? evalTime;
-  final String? toolName;
-  AgentResponse(this.text, this.modelName, this.retryCount,
-      {this.tps, this.evalTime, this.toolName});
-}
+export 'agent_response.dart';
+
+/// Sentinel passed as `modelFileName` when the app should open the cloud
+/// backend instead of a local .task/.litertlm. Local screens (Splash, Chat,
+/// Home) check for this before doing model-file work.
+const String kCloudModelSentinel = 'gemini-cloud';
 
 class AgentService {
   static final AgentService _instance = AgentService._internal();
   factory AgentService() => _instance;
   AgentService._internal();
 
-  ModelSpec _activeSpec = ModelRegistry.gemma3_1bLite;
+  ModelSpec _activeSpec = ModelRegistry.functionGemma270M;
   ModelSpec get activeSpec => _activeSpec;
-  String get _modelName => _activeSpec.displayName;
+  String get _modelName =>
+      _cloudActive ? GeminiService.modelName : _activeSpec.displayName;
 
-  final DeviceService _deviceService = DeviceService();
-  final FileService _fileService = FileService();
+  /// Display label for the active backend. Used by the chat header.
+  String get activeModelName => _modelName;
+
+  /// True when this turn (and following turns) will go through the cloud
+  /// Gemini path. Read by ChatScreen to hide the local model picker.
+  bool get isCloudMode => _cloudActive;
+
   final DatabaseService _dbService = DatabaseService();
-  final AppService _appService = AppService();
-  final UtilityService _utilityService = UtilityService();
-  final PersonalService _personalService = PersonalService();
-  final SearchService _searchService = SearchService();
+  final ToolRuntime _toolRuntime = ToolRuntime.instance;
+  final GeminiService _gemini = GeminiService();
 
   final _statusController = StreamController<String>.broadcast();
   Stream<String> get statusStream => _statusController.stream;
@@ -56,6 +52,16 @@ class AgentService {
   // Set when the user taps the stop button mid-stream. The stream loop checks
   // this so we don't recurse into a follow-up tool/summary turn after a stop.
   bool _stopRequested = false;
+
+  // True when the active backend is GeminiService (cloud). Set during
+  // [initialize]; consulted by every public entry point so the cloud path
+  // is taken regardless of which screen calls us.
+  bool _cloudActive = false;
+
+  // Forwarders that pipe GeminiService's streams into our own controllers
+  // so ChatScreen only ever subscribes to AgentService.
+  StreamSubscription<String>? _geminiStatusSub;
+  StreamSubscription<String>? _geminiTokenSub;
 
   static bool _gemmaReady = false;
   static bool _backgroundReady = false;
@@ -81,6 +87,24 @@ class AgentService {
   }
 
   Future<void> initialize(String modelFileName) async {
+    // Cloud path — same entrypoint so SplashScreen + ChatScreen don't need
+    // to know which backend they're booting. The sentinel routes us to
+    // GeminiService and we leave the local model fields untouched.
+    if (modelFileName == kCloudModelSentinel) {
+      _cloudActive = true;
+      _wireGeminiStreams();
+      _statusController.add('Connecting to Gemini...');
+      await _gemini.initialize();
+      _statusController.add('');
+      return;
+    }
+
+    // Switching back from cloud → local: tear down the forwarders.
+    if (_cloudActive) {
+      _unwireGeminiStreams();
+      _cloudActive = false;
+    }
+
     // Idempotent — splash + chat both end up calling this on the same model;
     // we don't want to re-map the .task / .litertlm file each time.
     if (_model != null && _activeSpec.fileName == modelFileName) {
@@ -113,10 +137,79 @@ class AgentService {
       maxNumImages: _activeSpec.supportsVision ? 1 : 0,
     );
 
+    // GPU kernel warm-up. The first generate call after model load takes
+    // 10–20 s on Adreno/Mali because the compute shaders are JIT-compiled
+    // and the weight tensors are mapped lazily. Doing it here — silently,
+    // before the user types — means the user's actual "hi" comes back fast
+    // instead of stalling for half a minute on cold start.
+    _statusController.add('Warming up...');
+    await _warmupModel();
+
+    // Pre-build the real chat session here so the first thing ChatScreen
+    // does isn't a slow `_rebuildChat([])` over the platform channel. The
+    // session is empty + seeded with the system prompt, and loadSession
+    // will short-circuit when ChatScreen asks for an empty new session.
+    _statusController.add('Preparing chat...');
+    await _rebuildChat(const []);
+    _chatIsPristine = true;
+
     _statusController.add('');
   }
 
+  /// True when `_chat` was just created by `initialize` and hasn't received
+  /// a real user query yet. Lets [loadSession] skip the expensive rebuild
+  /// when ChatScreen asks for a fresh empty session.
+  bool _chatIsPristine = false;
+
+  /// Fire a tiny throwaway generation against a fresh chat session so the
+  /// GPU pipeline is hot when the user sends their first real message.
+  /// Errors here are swallowed — a failed warm-up shouldn't block the app.
+  Future<void> _warmupModel() async {
+    if (_model == null) return;
+    try {
+      final warm = await _model!.createChat(
+        temperature: _activeSpec.temperature,
+        randomSeed: 1,
+        topK: _activeSpec.topK,
+        topP: _activeSpec.topP,
+        tokenBuffer: 8,
+        supportsFunctionCalls: false,
+        tools: const [],
+        modelType: _activeSpec.modelType,
+        isThinking: false,
+      );
+      await warm.addQuery(Message.text(text: 'hi', isUser: true));
+      // Pull at most a handful of tokens — we only care about lighting up
+      // the kernels, not the actual text.
+      int taken = 0;
+      await for (final _ in warm.generateChatResponseAsync()) {
+        if (++taken >= 4) break;
+      }
+      try {
+        await warm.stopGeneration();
+      } catch (_) {}
+    } catch (_) {
+      // Cold-start hiccup — the next real send still works.
+    }
+  }
+
+  void _wireGeminiStreams() {
+    _geminiStatusSub ??= _gemini.statusStream.listen(_statusController.add);
+    _geminiTokenSub ??= _gemini.tokenStream.listen(_tokenStreamController.add);
+  }
+
+  void _unwireGeminiStreams() {
+    _geminiStatusSub?.cancel();
+    _geminiTokenSub?.cancel();
+    _geminiStatusSub = null;
+    _geminiTokenSub = null;
+  }
+
   Future<void> loadSession(int sessionId) async {
+    if (_cloudActive) {
+      await _gemini.loadSession(sessionId);
+      return;
+    }
     final history = await _dbService.getChatHistory(sessionId);
     final replay = <Message>[];
     for (final msg in history) {
@@ -127,7 +220,14 @@ class AgentService {
         isUser: role == 'user',
       ));
     }
+    // Short-circuit when initialize() already built an empty chat session
+    // for us. Avoids 1–2s of platform-channel round-trips (createChat +
+    // two system-prompt addQuery calls) every time the user taps "new chat".
+    if (replay.isEmpty && _chatIsPristine && _chat != null) {
+      return;
+    }
     await _rebuildChat(replay);
+    _chatIsPristine = replay.isEmpty;
   }
 
   Future<void> _rebuildChat(List<Message> replay) async {
@@ -142,23 +242,16 @@ class AgentService {
       supportsFunctionCalls: _activeSpec.supportsTools,
       tools: _activeSpec.supportsTools ? _tools : const [],
       modelType: _activeSpec.modelType,
+      // Gemma 4's chat template renders the tool declarations alongside the
+      // system message at conversation creation. If we seed the prompt
+      // afterwards via addQuery instead, the model never sees its tools and
+      // hallucinates function-call syntax as plain text
+      // (e.g. `launch_app_by_name(app_name="Flashlight")`). Pass it here.
+      systemInstruction: _getSystemPrompt(),
       // Gemma 4 emits `<|channel>thought\n…<channel|>` reasoning tokens; the
-      // filter routes them to ThinkingResponse events. Smaller models (1B,
-      // Qwen3) don't have that channel — leaving the flag on for them strips
-      // legitimate output.
+      // filter routes them to ThinkingResponse events.
       isThinking: _activeSpec.isThinking,
     );
-
-    // Seed the new chat with a system instruction. Kept short so we don't
-    // burn KV budget — Gemma 4 already understands its role from training.
-    await _chat!.addQuery(Message.text(
-      text: _getSystemPrompt(),
-      isUser: true,
-    ));
-    await _chat!.addQuery(Message.text(
-      text: "Understood. I'm ready to help.",
-      isUser: false,
-    ));
 
     for (final m in replay) {
       await _chat!.addQuery(m);
@@ -166,24 +259,9 @@ class AgentService {
   }
 
   String _getSystemPrompt() {
-    // Per-model prompts. The 1B model treats long agentic instructions as
-    // content to echo back ("Okay! Let's focus on building an effective
-    // response system…"), and it skips function calling when given a wall
-    // of natural-language guidance. Keep its prompt minimal and rule-based.
-    // E2B has the capacity for the full agentic framing.
-    if (_activeSpec.id == 'gemma3-1b-lite') {
-      return '''You are a helpful on-device assistant on the user's phone.
-
-For any request that maps to an available tool — turn on flashlight, vibrate, set volume, open an app, list files, search the web, check time/battery/connectivity, read or copy clipboard, etc. — CALL THE TOOL. Do not say "I will" or "let me" — emit the function call.
-
-For greetings, small talk, and general knowledge, reply in one short sentence. No JSON, no preambles, no apologies.
-
-Never invent phone numbers, contacts, or file paths.''';
-    }
-
     return '''You are an on-device AI agent running on the user's Android phone. You are agentic: you chain tools to actually accomplish what the user asks, and you don't stop at half a step.
 
-RESPOND DIRECTLY. For greetings, names, chit-chat, basic questions, and anything you already know — answer in one or two short sentences immediately. Skip internal reasoning for simple requests; only think when a task genuinely needs multi-step planning. Long deliberation on simple questions is wrong.
+RESPOND DIRECTLY. For greetings, names, chit-chat, basic questions, and anything you already know — answer in one or two short sentences immediately. Do NOT use internal reasoning blocks for these. Reply with one line of plain text and stop.
 
 Decision flow:
 1. If the user attached an image, that image is in this message — look at it directly. Do NOT call get_recent_screenshots or list_files for an attached image; those tools are only for files already on the device.
@@ -208,6 +286,11 @@ Hard rules:
   /// call exits naturally with whatever text was generated so far — that
   /// partial reply gets saved as the assistant's message like any other turn.
   Future<void> stopGeneration() async {
+    if (_cloudActive) {
+      await _gemini.stopGeneration();
+      _statusController.add('');
+      return;
+    }
     if (_chat == null) return;
     _stopRequested = true;
     try {
@@ -227,7 +310,16 @@ Hard rules:
     int sessionId, {
     String? imagePath,
   }) async {
+    if (_cloudActive) {
+      // GeminiService manages its own controllers, but we forwarded those into
+      // ours in [_wireGeminiStreams] so ChatScreen still sees the same stream.
+      return _gemini.sendMessage(text, sessionId, imagePath: imagePath);
+    }
+
     if (_chat == null) throw Exception('Model not initialized');
+
+    // First real user query consumes the pre-built pristine session.
+    _chatIsPristine = false;
 
     try {
       await FlutterBackground.enableBackgroundExecution();
@@ -414,9 +506,8 @@ Hard rules:
 
     final String finalText;
     if (isGarbage) {
-      finalText = _activeSpec.id == 'gemma3-1b-lite'
-          ? "I got stuck on that one. Try rephrasing — or switch to Gemma 4 E2B from the model picker for tougher requests, it handles tools much more reliably."
-          : "I got stuck on that. Could you rephrase?";
+      finalText =
+          "Hmm, that one came back empty. Try again, or switch to Gemini in Settings for harder requests.";
     } else {
       finalText = trimmed;
     }
@@ -447,7 +538,7 @@ Hard rules:
     double priorEvalTime,
   ) async {
     _statusController.add('Running $toolName...');
-    final toolResult = await _executeTool(toolName, args);
+    final toolResult = await _toolRuntime.execute(toolName, args);
 
     // Feed the result back into chat history so the model knows what happened.
     // Use the retrying helper — MediaPipe occasionally reports the session as
@@ -460,7 +551,7 @@ Hard rules:
     // For simple actions (flashlight, vibrate, etc.) we have a clean templated
     // reply — return it immediately and skip a second model call. The chat
     // history still has the tool response so future turns stay coherent.
-    final direct = _formatToolResult(toolName, args, toolResult);
+    final direct = _toolRuntime.formatDirect(toolName, args, toolResult);
     if (direct != null) {
       await _dbService.saveMessage('assistant', direct, sessionId);
       return AgentResponse(direct, _modelName, 0,
@@ -479,91 +570,6 @@ Hard rules:
       evalTime: followUp.evalTime ?? priorEvalTime,
       toolName: toolName,
     );
-  }
-
-  /// Direct templated reply for tools where the result is trivially stringifiable.
-  /// Returns null for tools where the model should summarize.
-  String? _formatToolResult(
-      String toolName, Map<String, dynamic> args, Map<String, dynamic> result) {
-    if (result.containsKey('error')) return null;
-
-    switch (toolName) {
-      case 'toggle_flashlight':
-        final on = args['on'] as bool? ?? true;
-        return result['success'] == true
-            ? 'Flashlight turned ${on ? "on" : "off"}.'
-            : 'Could not toggle flashlight. Another app may be using the camera.';
-
-      case 'vibrate':
-        final ms = result['duration'] as int? ?? 500;
-        final secs = ms / 1000.0;
-        final label = secs == secs.truncateToDouble()
-            ? '${secs.toInt()} second${secs.toInt() == 1 ? "" : "s"}'
-            : '${secs.toStringAsFixed(1)} seconds';
-        return 'Phone vibrated for $label.';
-
-      case 'set_volume':
-        final pct = ((result['level'] as num?)?.toDouble() ?? 0.5) * 100;
-        return 'Volume set to ${pct.toStringAsFixed(0)}%.';
-
-      case 'copy_to_clipboard':
-        return 'Copied to clipboard.';
-
-      case 'read_clipboard':
-        final text = result['text'] as String? ?? '';
-        return text == 'Clipboard is empty'
-            ? 'Your clipboard is empty.'
-            : 'Clipboard contains: "$text"';
-
-      case 'open_url':
-        return result['success'] == true
-            ? 'Opening in your browser.'
-            : 'Could not open that URL.';
-
-      case 'launch_app':
-        return result['success'] == true
-            ? 'App launched.'
-            : 'Could not launch that app.';
-
-      case 'launch_app_by_name':
-        if (result['success'] == true) {
-          return '${result['appName'] ?? 'App'} opened.';
-        }
-        final suggestions = (result['suggestions'] as List?)?.cast<String>() ?? [];
-        return suggestions.isNotEmpty
-            ? 'App not found. Did you mean: ${suggestions.join(', ')}?'
-            : 'App not found on this device.';
-
-      case 'uninstall_app':
-        return result['success'] == true
-            ? 'Uninstall dialog opened.'
-            : 'Could not initiate uninstall.';
-
-      case 'search_play_store':
-        return 'Opened Play Store search.';
-
-      case 'open_play_store':
-        return result['success'] == true
-            ? 'Opened in Play Store.'
-            : 'Could not open Play Store.';
-
-      case 'get_public_ip':
-        final ip = result['ip'] as String? ?? result['query'] as String? ?? 'unknown';
-        return 'Your public IP address is $ip.';
-
-      case 'send_whatsapp':
-        return result['success'] == true
-            ? 'Opening WhatsApp...'
-            : 'Could not open WhatsApp. Make sure it is installed.';
-
-      case 'schedule_event':
-        return result['success'] == true
-            ? 'Event added to your calendar.'
-            : 'Could not create the calendar event.';
-
-      default:
-        return null;
-    }
   }
 
   // ─── Tool declarations ───
@@ -848,181 +854,6 @@ Hard rules:
     ),
   ];
 
-  Future<Map<String, dynamic>> _executeTool(
-      String name, Map<String, dynamic> args) async {
-    try {
-      switch (name) {
-        case 'get_date_time':
-          final now = DateTime.now();
-          const days = [
-            'Monday', 'Tuesday', 'Wednesday', 'Thursday',
-            'Friday', 'Saturday', 'Sunday'
-          ];
-          return {
-            'date':
-                '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}',
-            'time':
-                '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}',
-            'dayOfWeek': days[now.weekday - 1],
-            'timezone': now.timeZoneName,
-          };
-        case 'get_device_info':
-          return await _deviceService.getDeviceInfo();
-        case 'get_public_ip':
-          return await _searchService.getPublicIP();
-        case 'list_files':
-          {
-            final all = await _fileService.indexDocuments();
-            final extFilter =
-                (args['extension'] as String?)?.trim().toLowerCase();
-            var filtered = all;
-            if (extFilter != null && extFilter.isNotEmpty) {
-              final wanted = extFilter.startsWith('.')
-                  ? extFilter.substring(1)
-                  : extFilter;
-              filtered = all
-                  .where((f) => f.type.toLowerCase() == wanted)
-                  .toList();
-            }
-            final sortBy =
-                (args['sortBy'] as String?)?.trim().toLowerCase() ?? 'modified';
-            switch (sortBy) {
-              case 'name':
-                filtered.sort((a, b) => a.name.compareTo(b.name));
-                break;
-              case 'size':
-                filtered.sort((a, b) => b.size.compareTo(a.size));
-                break;
-              case 'modified':
-              default:
-                filtered.sort((a, b) => b.modifiedDate.compareTo(a.modifiedDate));
-            }
-            return {
-              'files': filtered.take(30).map((f) => {
-                    'name': f.name,
-                    'path': f.path,
-                    'sizeKB': (f.size / 1024).round(),
-                    'modified': f.modifiedDate.toIso8601String(),
-                  }).toList(),
-              'total': filtered.length,
-              'filterExtension': extFilter,
-              'sortedBy': sortBy,
-            };
-          }
-        case 'toggle_flashlight':
-          return {
-            'success': await _utilityService
-                .toggleFlashlight(args['on'] as bool? ?? true)
-          };
-        case 'list_apps':
-          final apps = await _appService.getInstalledApps();
-          // Sort largest-first so "what should I uninstall?" lands the
-          // useful entries at the top, then truncate. Apps with unknown
-          // size fall to the bottom.
-          apps.sort((a, b) =>
-              (b['sizeBytes'] as int? ?? 0).compareTo(a['sizeBytes'] as int? ?? 0));
-          return {
-            'apps': apps.take(60).map((a) {
-              final bytes = a['sizeBytes'] as int? ?? 0;
-              final mb = bytes > 0 ? (bytes / (1024 * 1024)) : 0;
-              return {
-                'name': a['name'],
-                'pkg': a['packageName'],
-                'sizeMB': mb > 0 ? double.parse(mb.toStringAsFixed(1)) : null,
-              };
-            }).toList(),
-            'total': apps.length,
-            'sortedBySizeDesc': true,
-          };
-        case 'launch_app':
-          final pkg = args['packageName'] as String? ?? '';
-          if (pkg.isEmpty) return {'error': 'packageName required'};
-          return {'success': await _appService.launchApp(pkg)};
-        case 'uninstall_app':
-          final pkg = args['packageName'] as String? ?? '';
-          if (pkg.isEmpty) return {'error': 'packageName required'};
-          return {'success': await _appService.uninstallApp(pkg)};
-        case 'search_play_store':
-          final query = args['query'] as String? ?? '';
-          if (query.isEmpty) return {'error': 'query required'};
-          await _appService.searchPlayStore(query);
-          return {'success': true};
-        case 'open_play_store':
-          final pkg = args['packageName'] as String? ?? '';
-          if (pkg.isEmpty) return {'error': 'packageName required'};
-          return {'success': await _appService.openPlayStore(pkg)};
-        case 'vibrate':
-          final duration = (args['duration'] as num?)?.toInt() ?? 500;
-          await _utilityService.vibrate(duration: duration);
-          return {'success': true, 'duration': duration};
-        case 'set_volume':
-          final level = (args['level'] as num?)?.toDouble() ?? 0.5;
-          await _utilityService.setVolume(level);
-          return {'success': true, 'level': level};
-        case 'copy_to_clipboard':
-          final text = args['text'] as String? ?? '';
-          if (text.isEmpty) return {'error': 'text required'};
-          await _utilityService.copyToClipboard(text);
-          return {'success': true};
-        case 'read_clipboard':
-          return {
-            'text': await _utilityService.readFromClipboard() ?? 'Clipboard is empty'
-          };
-        case 'check_connectivity':
-          return await _utilityService.checkConnectivityDetailed();
-        case 'search_web':
-          final query = args['query'] as String? ?? '';
-          if (query.isEmpty) return {'error': 'query required'};
-          final raw = await _searchService.searchWeb(query);
-          return _truncate(raw, 1500);
-        case 'open_url':
-          final url = args['url'] as String? ?? '';
-          if (url.isEmpty) return {'error': 'url required'};
-          return {'success': await _utilityService.openUrl(url)};
-        case 'launch_app_by_name':
-          final appName = args['appName'] as String? ?? '';
-          if (appName.isEmpty) return {'error': 'appName required'};
-          return await _appService.launchAppByName(appName);
-        case 'get_recent_screenshots':
-          return {'screenshots': await _fileService.getRecentScreenshots()};
-        case 'search_contacts':
-          return {
-            'contacts':
-                await _personalService.searchContacts(args['query'] as String? ?? '')
-          };
-        case 'schedule_event':
-          final title = args['title'] as String? ?? '';
-          final startStr = args['start'] as String? ?? '';
-          final endStr = args['end'] as String? ?? '';
-          if (title.isEmpty || startStr.isEmpty || endStr.isEmpty) {
-            return {'error': 'title, start, and end are required'};
-          }
-          try {
-            return {
-              'success': await _personalService.scheduleEvent(
-                title: title,
-                start: DateTime.parse(startStr),
-                end: DateTime.parse(endStr),
-                description: args['description'] as String?,
-              )
-            };
-          } catch (e) {
-            return {'error': 'Invalid date format: $e'};
-          }
-        case 'send_whatsapp':
-          final phone = args['phone'] as String? ?? '';
-          final message = args['message'] as String? ?? '';
-          if (phone.isEmpty || message.isEmpty) {
-            return {'error': 'phone and message required'};
-          }
-          return {'success': await _personalService.sendWhatsApp(phone, message)};
-        default:
-          return {'error': 'Unknown tool: $name'};
-      }
-    } catch (e) {
-      return {'error': e.toString()};
-    }
-  }
 
   // Retrying addQuery for tool responses. MediaPipe's session sometimes
   // reports "Previous invocation still processing" right after a
@@ -1041,16 +872,5 @@ Hard rules:
         await Future.delayed(Duration(milliseconds: 120 * (attempt + 1)));
       }
     }
-  }
-
-  // Truncate a JSON-shaped result so a single tool response doesn't blow
-  // out the 4K KV window when fed back to the model.
-  Map<String, dynamic> _truncate(Map<String, dynamic> result, int maxChars) {
-    final encoded = jsonEncode(result);
-    if (encoded.length <= maxChars) return result;
-    return {
-      'summary': encoded.substring(0, maxChars),
-      'note': 'Result truncated to fit context window.',
-    };
   }
 }

@@ -62,80 +62,46 @@ class ModelSpec {
 class ModelRegistry {
   ModelRegistry._();
 
-  // Public HF mirror under the user's account. The original
-  // `litert-community/Gemma3-1B-IT` is gated; this re-host removes the gate so
-  // first-launch download is one tap. The .task is the multi-prefill q4 build
-  // with a 2048-token ekv window — match maxTokens to that ceiling so the
-  // system prompt + 20+ tool declarations (~1400 tokens) fit on first turn.
-  static const String _gemma3_1bUrl =
-      'https://huggingface.co/Santoshp123/Local-Agent/resolve/main/Gemma3-1B-IT_multi-prefill-seq_q4_ekv2048.task';
-
-  static const ModelSpec gemma3_1bLite = ModelSpec(
-    id: 'gemma3-1b-lite',
-    displayName: 'Gemma 3 1B Lite',
-    fileName: 'Gemma3-1B-IT_multi-prefill-seq_q4_ekv2048.task',
-    url: _gemma3_1bUrl,
-    sizeMB: 555,
-    tagline: 'Fast on-device chat + native tool calls. Text only.',
-    modelType: ModelType.gemmaIt,
+  /// Purpose-built for function calling — that's the actual job this app
+  /// asks the local model to do most of the time ("turn on flashlight",
+  /// "open Instagram", "find my PDFs"). Tradeoff: weak on open-ended chat
+  /// because it's only 270M parameters. For anything that isn't an action,
+  /// users can flip to cloud mode in Settings.
+  ///
+  /// Switched here from Gemma 4 E2B because the litertlm bundle of that
+  /// model has `supportsFunctionCalls` disabled in the upstream
+  /// flutter_gemma example with the comment "causes issues with
+  /// multimodal" — native FC isn't reliable on that file regardless of
+  /// how we wire the template.
+  static const ModelSpec functionGemma270M = ModelSpec(
+    id: 'function-gemma-270m',
+    displayName: 'FunctionGemma 270M',
+    fileName: 'functiongemma-270M-it.task',
+    url:
+        'https://huggingface.co/sasha-denisov/function-gemma-270M-it/resolve/main/functiongemma-270M-it.task',
+    sizeMB: 284,
+    tagline: 'Tiny + tool-calling specialist. Pair with cloud for open chat.',
+    modelType: ModelType.functionGemma,
     fileType: ModelFileType.task,
     preferredBackend: PreferredBackend.gpu,
     supportsVision: false,
     supportsTools: true,
     isThinking: false,
-    maxTokens: 2048,
-    // Small models drift. Tighter sampling cuts the repetition loops the user
-    // hit on Qwen3 0.6B and keeps Gemma 3 1B factual on tool-call args.
-    temperature: 0.55,
-    topK: 40,
-    topP: 0.92,
-    minRamGB: 3,
-  );
-
-  static const ModelSpec gemma4E2bVision = ModelSpec(
-    id: 'gemma4-e2b',
-    displayName: 'Gemma 4 E2B',
-    fileName: 'gemma-4-E2B-it.litertlm',
-    url:
-        'https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm',
-    sizeMB: 2590,
-    tagline: 'Multimodal — vision + reasoning + native tools.',
-    modelType: ModelType.gemma4,
-    fileType: ModelFileType.litertlm,
-    preferredBackend: PreferredBackend.gpu,
-    supportsVision: true,
-    supportsTools: true,
-    isThinking: true,
-    // 2048 is plenty for tool conversations and frees ~1 GB of KV vs the old
-    // 4096 ceiling — that was the biggest single lag source on Dimensity-700
-    // class devices.
-    maxTokens: 2048,
-    temperature: 0.7,
-    topK: 40,
+    maxTokens: 1024,
+    temperature: 1.0,
+    topK: 64,
     topP: 0.95,
-    minRamGB: 6,
+    minRamGB: 2,
   );
 
-  static const List<ModelSpec> all = [gemma3_1bLite, gemma4E2bVision];
+  static const List<ModelSpec> all = [functionGemma270M];
 
   static ModelSpec byFileName(String fileName) {
     return all.firstWhere(
       (m) => m.fileName == fileName,
-      orElse: () => gemma3_1bLite,
+      orElse: () => functionGemma270M,
     );
   }
 
-  /// Heaviest spec the device's RAM clears. Used for the home-screen default
-  /// recommendation. Falls back to the lite model when RAM is unknown so
-  /// low-end hardware never gets pushed into E2B by accident.
-  static ModelSpec defaultForDevice(int? ramGB) {
-    if (ramGB == null) return gemma3_1bLite;
-    ModelSpec best = gemma3_1bLite;
-    for (final spec in all) {
-      if (ramGB >= spec.minRamGB && spec.sizeMB > best.sizeMB) {
-        best = spec;
-      }
-    }
-    return best;
-  }
+  static ModelSpec defaultForDevice(int? ramGB) => functionGemma270M;
 }
