@@ -113,7 +113,7 @@ class _SplashScreenState extends State<SplashScreen> {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'First open can take 15–30s — the GPU kernels are compiling.',
+                  'Loading on CPU. First open is a few seconds; later opens are instant.',
                   textAlign: TextAlign.center,
                   style: GoogleFonts.outfit(
                     color: Colors.white.withValues(alpha: 0.32),

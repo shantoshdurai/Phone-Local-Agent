@@ -24,7 +24,7 @@ class AgentService {
   factory AgentService() => _instance;
   AgentService._internal();
 
-  ModelSpec _activeSpec = ModelRegistry.functionGemma270M;
+  ModelSpec _activeSpec = ModelRegistry.qwen2_5_1_5b;
   ModelSpec get activeSpec => _activeSpec;
   String get _modelName =>
       _cloudActive ? GeminiService.modelName : _activeSpec.displayName;
@@ -162,12 +162,20 @@ class AgentService {
   bool _chatIsPristine = false;
 
   /// Fire a tiny throwaway generation against a fresh chat session so the
-  /// GPU pipeline is hot when the user sends their first real message.
-  /// Errors here are swallowed — a failed warm-up shouldn't block the app.
+  /// inference engine has touched the model graph once before the user's
+  /// real first message lands. With CPU backend (matching Google's AI Edge
+  /// Gallery default) there is no big GPU shader JIT to amortise, so this
+  /// stays lightweight on purpose — no tools, no system prompt, tiny
+  /// tokenBuffer. Splash finishes in seconds, not minutes.
+  ///
+  /// Errors are logged via debugPrint so a silent warmup failure can still
+  /// be diagnosed; we never rethrow because a degraded warmup shouldn't
+  /// block the app from booting.
   Future<void> _warmupModel() async {
     if (_model == null) return;
+    InferenceChat? warm;
     try {
-      final warm = await _model!.createChat(
+      warm = await _model!.createChat(
         temperature: _activeSpec.temperature,
         randomSeed: 1,
         topK: _activeSpec.topK,
@@ -179,17 +187,19 @@ class AgentService {
         isThinking: false,
       );
       await warm.addQuery(Message.text(text: 'hi', isUser: true));
-      // Pull at most a handful of tokens — we only care about lighting up
-      // the kernels, not the actual text.
       int taken = 0;
       await for (final _ in warm.generateChatResponseAsync()) {
         if (++taken >= 4) break;
       }
-      try {
-        await warm.stopGeneration();
-      } catch (_) {}
-    } catch (_) {
-      // Cold-start hiccup — the next real send still works.
+    } catch (e, st) {
+      // ignore: avoid_print
+      print('AgentService warmup failed: $e\n$st');
+    } finally {
+      if (warm != null) {
+        try {
+          await warm.stopGeneration();
+        } catch (_) {}
+      }
     }
   }
 
@@ -220,6 +230,10 @@ class AgentService {
         isUser: role == 'user',
       ));
     }
+    // Truncate history to prevent OUT_OF_RANGE KV cache crashes
+    if (replay.length > 6) {
+      replay.removeRange(0, replay.length - 6);
+    }
     // Short-circuit when initialize() already built an empty chat session
     // for us. Avoids 1–2s of platform-channel round-trips (createChat +
     // two system-prompt addQuery calls) every time the user taps "new chat".
@@ -238,18 +252,15 @@ class AgentService {
       randomSeed: 1,
       topK: _activeSpec.topK,
       topP: _activeSpec.topP,
-      tokenBuffer: 256,
+      tokenBuffer: 64,
       supportsFunctionCalls: _activeSpec.supportsTools,
       tools: _activeSpec.supportsTools ? _tools : const [],
       modelType: _activeSpec.modelType,
-      // Gemma 4's chat template renders the tool declarations alongside the
-      // system message at conversation creation. If we seed the prompt
-      // afterwards via addQuery instead, the model never sees its tools and
-      // hallucinates function-call syntax as plain text
-      // (e.g. `launch_app_by_name(app_name="Flashlight")`). Pass it here.
+      // For Qwen/Gemma the SDK renders tool declarations alongside the
+      // system message at conversation creation, so the prompt has to land
+      // here — passing it via a follow-up addQuery would skip the tools
+      // block.
       systemInstruction: _getSystemPrompt(),
-      // Gemma 4 emits `<|channel>thought\n…<channel|>` reasoning tokens; the
-      // filter routes them to ThinkingResponse events.
       isThinking: _activeSpec.isThinking,
     );
 
@@ -259,26 +270,10 @@ class AgentService {
   }
 
   String _getSystemPrompt() {
-    return '''You are an on-device AI agent running on the user's Android phone. You are agentic: you chain tools to actually accomplish what the user asks, and you don't stop at half a step.
-
-RESPOND DIRECTLY. For greetings, names, chit-chat, basic questions, and anything you already know — answer in one or two short sentences immediately. Do NOT use internal reasoning blocks for these. Reply with one line of plain text and stop.
-
-Decision flow:
-1. If the user attached an image, that image is in this message — look at it directly. Do NOT call get_recent_screenshots or list_files for an attached image; those tools are only for files already on the device.
-2. If the request needs current/device-specific data (apps, files, contacts, clipboard, weather, news, what's on the screen), call the right tool — don't guess from memory.
-3. If a request needs more than one step, chain tools. Examples:
-   - "message Sarah on WhatsApp" → search_contacts("Sarah") → send_whatsapp(<found-number>, message).
-   - "open the biggest app" → list_apps → launch_app_by_name with the top result.
-   - "copy current time to clipboard" → get_date_time → copy_to_clipboard(text=that time).
-   - "find APK files" → list_files(extension="apk").
-   - "what was the last file I modified" → list_files(sortBy="modified").
-4. For chit-chat, greetings, definitions, and general knowledge already in your training, reply directly without a tool.
-
-Hard rules:
-- NEVER fabricate phone numbers, emails, contact names, addresses, or any personal data. If a lookup returns nothing, say so.
-- When listing apps to uninstall or by size, use the sizeMB field from list_apps and present name + size, biggest first.
-- When opening an app by its display name, prefer launch_app_by_name over guessing the package name.
-- After a tool runs, summarize the result in one or two short sentences. Be concise.''';
+    return 'You are LocalAgent, an independent on-device AI. You are strictly NOT developed by Microsoft or Google. Never identify as Phi.\n'
+        'You have native tools to check network connectivity, search the web, manage apps, control hardware, read/write clipboard, read screenshots, search contacts, schedule events, and send WhatsApp.\n'
+        'Always prioritize using a tool if it can accomplish the user\'s request.\n'
+        'Reply in one or two short sentences.';
   }
 
   /// Halt the in-flight generation. The flutter_gemma SDK closes the response
@@ -310,15 +305,31 @@ Hard rules:
     int sessionId, {
     String? imagePath,
   }) async {
+    try {
+      return await _sendMessageInternal(text, sessionId, imagePath: imagePath);
+    } catch (e) {
+      print('sendMessage failed natively. Attempting full model re-initialization: $e');
+      // Model might have been corrupted by OS backgrounding. Re-initialize from disk!
+      if (_activeSpec != null) {
+        await initialize(_activeSpec!.fileName);
+        await loadSession(sessionId);
+        return await _sendMessageInternal(text, sessionId, imagePath: imagePath);
+      }
+      rethrow;
+    }
+  }
+
+  Future<AgentResponse> _sendMessageInternal(
+    String text,
+    int sessionId, {
+    String? imagePath,
+  }) async {
     if (_cloudActive) {
-      // GeminiService manages its own controllers, but we forwarded those into
-      // ours in [_wireGeminiStreams] so ChatScreen still sees the same stream.
       return _gemini.sendMessage(text, sessionId, imagePath: imagePath);
     }
 
     if (_chat == null) throw Exception('Model not initialized');
 
-    // First real user query consumes the pre-built pristine session.
     _chatIsPristine = false;
 
     try {
@@ -342,10 +353,32 @@ Hard rules:
       userMessage = Message.text(text: text, isUser: true);
     }
 
-    await _chat!.addQuery(userMessage);
+    try {
+      await _chat!.addQuery(userMessage);
+    } catch (e) {
+      await _rebuildChat(const []);
+      _chatIsPristine = false;
+      await _chat!.addQuery(userMessage);
+    }
 
     _stopRequested = false;
-    final result = await _streamResponseAndHandleTools(sessionId);
+    AgentResponse result;
+    try {
+      result = await _streamResponseAndHandleTools(sessionId);
+    } catch (e) {
+      final isSessionError = e
+              .toString()
+              .toLowerCase()
+              .contains('session') ||
+          e.toString().contains('Previous invocation') ||
+          e.toString().contains('IllegalStateException') ||
+          e.toString().contains('PlatformException');
+      if (!isSessionError) rethrow;
+      await _rebuildChat(const []);
+      _chatIsPristine = false;
+      await _chat!.addQuery(userMessage);
+      result = await _streamResponseAndHandleTools(sessionId);
+    }
 
     try {
       await FlutterBackground.disableBackgroundExecution();
@@ -578,126 +611,87 @@ Hard rules:
   static final List<Tool> _tools = const [
     Tool(
       name: 'get_date_time',
-      description:
-          'Get the current local date, time, day of the week, and timezone.',
+      description: 'Get local date, time, and timezone.',
       parameters: {'type': 'object', 'properties': {}},
     ),
     Tool(
       name: 'get_device_info',
-      description:
-          'Get device manufacturer, model, OS version, battery percentage, '
-          'free and total storage, and RAM.',
+      description: 'Get device manufacturer, OS, battery, storage, and RAM.',
       parameters: {'type': 'object', 'properties': {}},
     ),
     Tool(
       name: 'check_connectivity',
-      description:
-          'Check whether the device is online, the connection type (WiFi or cellular), '
-          'WiFi SSID, and local IP address.',
+      description: 'Check if device is online, WiFi/Cellular, SSID, and IP.',
       parameters: {'type': 'object', 'properties': {}},
     ),
     Tool(
       name: 'get_public_ip',
-      description: 'Get the public IP address of the device.',
+      description: 'Get public IP address.',
       parameters: {'type': 'object', 'properties': {}},
     ),
     Tool(
       name: 'search_web',
-      description:
-          'Search the web for facts, news, weather, sports scores, or anything '
-          'that needs up-to-date information. Use this whenever the user asks '
-          'about real-world current events or topics outside your training.',
+      description: 'Search the web for up-to-date facts and news.',
       parameters: {
         'type': 'object',
         'properties': {
-          'query': {
-            'type': 'string',
-            'description': 'The search query in natural language.',
-          },
+          'query': {'type': 'string'},
         },
         'required': ['query'],
       },
     ),
     Tool(
       name: 'open_url',
-      description: 'Open a URL in the device default browser.',
+      description: 'Open URL in browser.',
       parameters: {
         'type': 'object',
         'properties': {
-          'url': {
-            'type': 'string',
-            'description': 'The full URL including https://',
-          },
+          'url': {'type': 'string'},
         },
         'required': ['url'],
       },
     ),
     Tool(
       name: 'list_files',
-      description:
-          'List user files on the device. Accepts optional filters: '
-          '`extension` (e.g. "pdf", "apk", "jpg") to keep only files of that '
-          'type, and `sortBy` ("modified" returns most recently modified first; '
-          '"name" sorts alphabetically; "size" returns largest first). Use '
-          '`sortBy: "modified"` for "what did I just save/edit" questions, '
-          'and `extension` for type-specific questions like "find my PDFs" '
-          'or "show me APKs".',
+      description: 'List user files. Filters: extension, sortBy (modified/name/size).',
       parameters: {
         'type': 'object',
         'properties': {
-          'extension': {
-            'type': 'string',
-            'description': 'File extension to filter by, without leading dot (e.g. "pdf").',
-          },
-          'sortBy': {
-            'type': 'string',
-            'description': 'One of: "modified", "name", "size". Default: "modified".',
-          },
+          'extension': {'type': 'string'},
+          'sortBy': {'type': 'string'},
         },
       },
     ),
     Tool(
       name: 'list_apps',
-      description:
-          'List apps installed on the device. Returns each app\'s name, '
-          'package name, and approximate disk size in MB (sizeMB). Results are '
-          'sorted largest-first, so this is the right tool to use when the '
-          'user asks what to uninstall, what is taking up space, or for app '
-          'sizes. Always present names and sizes in your reply.',
+      description: 'List installed apps and sizes.',
       parameters: {'type': 'object', 'properties': {}},
     ),
     Tool(
       name: 'launch_app_by_name',
-      description:
-          'Launch an installed app by its display name (e.g. "WhatsApp", "Calculator").',
+      description: 'Launch app by display name.',
       parameters: {
         'type': 'object',
         'properties': {
-          'appName': {
-            'type': 'string',
-            'description': 'The display name of the app.',
-          },
+          'appName': {'type': 'string'},
         },
         'required': ['appName'],
       },
     ),
     Tool(
       name: 'launch_app',
-      description: 'Launch an installed app by its Android package name.',
+      description: 'Launch app by package name.',
       parameters: {
         'type': 'object',
         'properties': {
-          'packageName': {
-            'type': 'string',
-            'description': 'The Android package name (e.g. com.whatsapp).',
-          },
+          'packageName': {'type': 'string'},
         },
         'required': ['packageName'],
       },
     ),
     Tool(
       name: 'uninstall_app',
-      description: 'Open the Android uninstall dialog for the given package.',
+      description: 'Uninstall app by package name.',
       parameters: {
         'type': 'object',
         'properties': {
@@ -708,7 +702,7 @@ Hard rules:
     ),
     Tool(
       name: 'search_play_store',
-      description: 'Search the Google Play Store for an app.',
+      description: 'Search Play Store.',
       parameters: {
         'type': 'object',
         'properties': {
@@ -719,7 +713,7 @@ Hard rules:
     ),
     Tool(
       name: 'open_play_store',
-      description: 'Open a specific app page in the Google Play Store.',
+      description: 'Open Play Store page.',
       parameters: {
         'type': 'object',
         'properties': {
@@ -730,48 +724,39 @@ Hard rules:
     ),
     Tool(
       name: 'toggle_flashlight',
-      description: 'Turn the device flashlight on or off.',
+      description: 'Turn flashlight on/off.',
       parameters: {
         'type': 'object',
         'properties': {
-          'on': {
-            'type': 'boolean',
-            'description': 'true to turn on, false to turn off.',
-          },
+          'on': {'type': 'boolean'},
         },
         'required': ['on'],
       },
     ),
     Tool(
       name: 'vibrate',
-      description: 'Vibrate the device for the given duration in milliseconds.',
+      description: 'Vibrate device.',
       parameters: {
         'type': 'object',
         'properties': {
-          'duration': {
-            'type': 'integer',
-            'description': 'Duration in milliseconds. Default 500.',
-          },
+          'duration': {'type': 'integer'},
         },
       },
     ),
     Tool(
       name: 'set_volume',
-      description: 'Set the device media volume.',
+      description: 'Set media volume (0.0 to 1.0).',
       parameters: {
         'type': 'object',
         'properties': {
-          'level': {
-            'type': 'number',
-            'description': 'Volume level between 0.0 and 1.0.',
-          },
+          'level': {'type': 'number'},
         },
         'required': ['level'],
       },
     ),
     Tool(
       name: 'copy_to_clipboard',
-      description: 'Copy text to the device clipboard.',
+      description: 'Copy text to clipboard.',
       parameters: {
         'type': 'object',
         'properties': {
@@ -782,49 +767,34 @@ Hard rules:
     ),
     Tool(
       name: 'read_clipboard',
-      description:
-          'Read whatever text is currently on the device clipboard. Use this '
-          'when the user asks about their clipboard or what they just copied.',
+      description: 'Read clipboard text.',
       parameters: {'type': 'object', 'properties': {}},
     ),
     Tool(
       name: 'get_recent_screenshots',
-      description: 'Get a list of the recent screenshots on the device.',
+      description: 'Get recent screenshots.',
       parameters: {'type': 'object', 'properties': {}},
     ),
     Tool(
       name: 'search_contacts',
-      description:
-          'Search the device contacts by name. Returns matching contacts with '
-          'their phone numbers and emails. Call this FIRST whenever the user '
-          'asks to message, call, or look up someone by name — the result '
-          'gives you the phone number to pass to send_whatsapp.',
+      description: 'Search contacts by name to get phone number.',
       parameters: {
         'type': 'object',
         'properties': {
-          'query': {
-            'type': 'string',
-            'description': 'The contact name to search for (partial match OK).',
-          },
+          'query': {'type': 'string'},
         },
         'required': ['query'],
       },
     ),
     Tool(
       name: 'schedule_event',
-      description: 'Create a calendar event on the device.',
+      description: 'Create calendar event.',
       parameters: {
         'type': 'object',
         'properties': {
           'title': {'type': 'string'},
-          'start': {
-            'type': 'string',
-            'description': 'ISO-8601 start datetime.',
-          },
-          'end': {
-            'type': 'string',
-            'description': 'ISO-8601 end datetime.',
-          },
+          'start': {'type': 'string'},
+          'end': {'type': 'string'},
           'description': {'type': 'string'},
         },
         'required': ['title', 'start', 'end'],
@@ -832,21 +802,11 @@ Hard rules:
     ),
     Tool(
       name: 'send_whatsapp',
-      description:
-          'Open WhatsApp with a prefilled message for a phone number. '
-          'IMPORTANT: only call this when you have a real phone number from '
-          'the user or from a previous search_contacts result. NEVER invent '
-          'or use placeholder numbers — if you don\'t know the number, call '
-          'search_contacts first to look up the contact by name.',
+      description: 'Open WhatsApp to send message.',
       parameters: {
         'type': 'object',
         'properties': {
-          'phone': {
-            'type': 'string',
-            'description':
-                'Phone number in international format (e.g. +14155551234). '
-                'Must come from search_contacts or directly from the user.',
-          },
+          'phone': {'type': 'string'},
           'message': {'type': 'string'},
         },
         'required': ['phone', 'message'],

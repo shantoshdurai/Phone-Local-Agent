@@ -41,9 +41,25 @@ void main() async {
       // Local (or unset, which we treat as local for backwards-compat with
       // installs from before the mode picker existed).
       final downloader = ModelDownloaderService();
-      if (lastModel != null && await downloader.isModelDownloaded(lastModel)) {
+
+      // Only honor `lastModel` when it still matches a model the app
+      // currently ships. Otherwise we'd hand the SDK a file whose modelType
+      // / fileType no longer match anything in the registry — that's the
+      // "is a LiteRT-LM model … not by EngineFactory" crash that hits
+      // anyone upgrading from an install that still has the old Gemma 4
+      // `.litertlm` lying around.
+      final registryFileNames =
+          ModelRegistry.all.map((s) => s.fileName).toSet();
+      final lastModelKnown =
+          lastModel != null && registryFileNames.contains(lastModel);
+
+      if (lastModelKnown && await downloader.isModelDownloaded(lastModel)) {
         initialModel = lastModel;
       } else {
+        // Stale or unknown — wipe so we don't keep re-resolving to it.
+        if (lastModel != null && !lastModelKnown) {
+          await prefs.remove(_kLastModelKey);
+        }
         for (final spec in ModelRegistry.all) {
           if (await downloader.isModelDownloaded(spec.fileName)) {
             initialModel = spec.fileName;

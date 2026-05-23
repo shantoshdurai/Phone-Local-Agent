@@ -439,7 +439,12 @@ class _ChatScreenState extends State<ChatScreen> {
         _streamingText.value = '';
         _scrollToBottom();
       }
-    } catch (e) {
+    } catch (e, st) {
+      // Surface the raw error in the debug console so we can actually
+      // diagnose "Something went wrong" reports — the user only sees the
+      // humanized copy, but the log line lets us trace SDK / platform faults.
+      debugPrint('ChatScreen.sendMessage failed: $e');
+      debugPrintStack(stackTrace: st);
       if (mounted) {
         setState(() {
           _isTyping = false;
@@ -531,11 +536,9 @@ class _ChatScreenState extends State<ChatScreen> {
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
-        leading: Builder(
-          builder: (context) => IconButton(
-            icon: const Icon(Icons.menu_rounded, color: Colors.white70),
-            onPressed: () => Scaffold.of(context).openDrawer(),
-          ),
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back_ios_new_rounded, color: Colors.white70, size: 20),
+          onPressed: () => Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const HomeScreen())),
         ),
         title: _isCloud
             ? Row(
@@ -647,9 +650,11 @@ class _ChatScreenState extends State<ChatScreen> {
         elevation: 0,
         backgroundColor: Colors.black,
         actions: [
-          IconButton(
-            icon: const Icon(Icons.history_rounded, size: 20, color: Colors.white70),
-            onPressed: () => _createNewChat(),
+          Builder(
+            builder: (context) => IconButton(
+              icon: const Icon(Icons.history_rounded, size: 20, color: Colors.white70),
+              onPressed: () => Scaffold.of(context).openDrawer(),
+            ),
           ),
           IconButton(
             icon: const Icon(Icons.settings_outlined, size: 20, color: Colors.white70),
