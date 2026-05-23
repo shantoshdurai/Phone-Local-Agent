@@ -167,6 +167,19 @@ class ToolRuntime {
           final phone = args['phone'] as String? ?? '';
           if (phone.isEmpty) return {'error': 'phone number required'};
           return {'success': await _utilityService.makePhoneCall(phone)};
+        case 'set_alarm':
+          final hour = args['hour'] as int?;
+          final minute = args['minute'] as int?;
+          final message = args['message'] as String? ?? 'Alarm';
+          if (hour == null || minute == null) return {'error': 'hour and minute required'};
+          return {'success': await _utilityService.setAlarm(hour, minute, message)};
+        case 'set_timer':
+          final seconds = args['seconds'] as int?;
+          final message = args['message'] as String? ?? 'Timer';
+          if (seconds == null) return {'error': 'seconds required'};
+          return {'success': await _utilityService.setTimer(seconds, message)};
+        case 'read_notifications':
+          return await _utilityService.readNotifications();
         case 'launch_app_by_name':
           final appName = args['appName'] as String? ?? '';
           if (appName.isEmpty) return {'error': 'appName required'};
@@ -258,6 +271,16 @@ class ToolRuntime {
         return result['success'] == true
             ? 'Initiating phone call...'
             : 'Could not initiate phone call.';
+
+      case 'set_alarm':
+        return result['success'] == true
+            ? 'Alarm set successfully.'
+            : 'Could not set alarm.';
+
+      case 'set_timer':
+        return result['success'] == true
+            ? 'Timer set successfully.'
+            : 'Could not set timer.';
 
       case 'launch_app':
         return result['success'] == true
@@ -580,5 +603,50 @@ const List<Map<String, dynamic>> kToolCatalog = [
       },
       'required': ['phone'],
     },
+  },
+  {
+    'name': 'set_alarm',
+    'description': 'Set an alarm on the device clock natively.',
+    'parameters': {
+      'type': 'object',
+      'properties': {
+        'hour': {
+          'type': 'integer',
+          'description': 'Hour in 24-hour format (0-23).',
+        },
+        'minute': {
+          'type': 'integer',
+          'description': 'Minute (0-59).',
+        },
+        'message': {
+          'type': 'string',
+          'description': 'Optional label for the alarm.',
+        },
+      },
+      'required': ['hour', 'minute'],
+    },
+  },
+  {
+    'name': 'set_timer',
+    'description': 'Set a countdown timer on the device natively.',
+    'parameters': {
+      'type': 'object',
+      'properties': {
+        'seconds': {
+          'type': 'integer',
+          'description': 'Length of the timer in seconds.',
+        },
+        'message': {
+          'type': 'string',
+          'description': 'Optional label for the timer.',
+        },
+      },
+      'required': ['seconds'],
+    },
+  },
+  {
+    'name': 'read_notifications',
+    'description': 'Read the unread notifications from the device. May require the user to grant permission first.',
+    'parameters': {'type': 'object', 'properties': {}},
   },
 ];

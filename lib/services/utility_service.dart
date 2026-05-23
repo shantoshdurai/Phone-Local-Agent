@@ -6,6 +6,8 @@ import 'package:http/http.dart' as http;
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'dart:convert';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:android_intent_plus/android_intent.dart';
+import 'package:notification_listener_service/notification_listener_service.dart';
 
 class UtilityService {
   Future<bool> toggleFlashlight(bool on) async {
@@ -154,6 +156,58 @@ class UtilityService {
       return await launchUrl(uri);
     } catch (e) {
       return false;
+    }
+  }
+
+  Future<bool> setAlarm(int hour, int minute, String message) async {
+    try {
+      final intent = AndroidIntent(
+        action: 'android.intent.action.SET_ALARM',
+        arguments: <String, dynamic>{
+          'android.intent.extra.alarm.HOUR': hour,
+          'android.intent.extra.alarm.MINUTES': minute,
+          'android.intent.extra.alarm.MESSAGE': message,
+          'android.intent.extra.alarm.SKIP_UI': true,
+        },
+      );
+      await intent.launch();
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  Future<bool> setTimer(int seconds, String message) async {
+    try {
+      final intent = AndroidIntent(
+        action: 'android.intent.action.SET_TIMER',
+        arguments: <String, dynamic>{
+          'android.intent.extra.alarm.LENGTH': seconds,
+          'android.intent.extra.alarm.MESSAGE': message,
+          'android.intent.extra.alarm.SKIP_UI': true,
+        },
+      );
+      await intent.launch();
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  Future<Map<String, dynamic>> readNotifications() async {
+    try {
+      bool status = await NotificationListenerService.isPermissionGranted();
+      if (!status) {
+        // Will prompt the user to grant permission
+        status = await NotificationListenerService.requestPermission();
+        if (!status) {
+          return {'error': 'Notification access permission denied.'};
+        }
+      }
+      
+      return {'success': true, 'message': 'Notification listening setup. (Note: Can only read new incoming notifications after granting permission, reading past notifications is not supported by Android API unless cached)'};
+    } catch (e) {
+      return {'error': 'Failed to read notifications: $e'};
     }
   }
 }
