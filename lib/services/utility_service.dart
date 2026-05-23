@@ -145,4 +145,15 @@ class UtilityService {
       return false;
     }
   }
+
+  Future<bool> makePhoneCall(String phoneNumber) async {
+    // Strip all non-digit characters except the leading +
+    String cleaned = phoneNumber.replaceAll(RegExp(r'[^\d+]'), '');
+    final Uri uri = Uri.parse('tel:$cleaned');
+    try {
+      return await launchUrl(uri);
+    } catch (e) {
+      return false;
+    }
+  }
 }

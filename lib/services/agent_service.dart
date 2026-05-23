@@ -253,9 +253,9 @@ class AgentService {
       topK: _activeSpec.topK,
       topP: _activeSpec.topP,
       tokenBuffer: 64,
-      supportsFunctionCalls: _activeSpec.supportsTools,
-      tools: _activeSpec.supportsTools ? _tools : const [],
-      modelType: _activeSpec.modelType,
+      tools: _activeSpec.supportsTools
+          ? (_activeSpec.modelType == ModelType.phi ? _phiTools : _tools)
+          : const [],
       // For Qwen/Gemma the SDK renders tool declarations alongside the
       // system message at conversation creation, so the prompt has to land
       // here — passing it via a follow-up addQuery would skip the tools
@@ -271,7 +271,7 @@ class AgentService {
 
   String _getSystemPrompt() {
     return 'You are LocalAgent, an independent on-device AI. You are strictly NOT developed by Microsoft or Google. Never identify as Phi.\n'
-        'You have native tools to check network connectivity, search the web, manage apps, control hardware, read/write clipboard, read screenshots, search contacts, schedule events, and send WhatsApp.\n'
+        'You have native tools to check network connectivity, search the web, manage apps, control hardware, interact with the device, search contacts, and make phone calls.\n'
         'Always prioritize using a tool if it can accomplish the user\'s request.\n'
         'Reply in one or two short sentences.';
   }
@@ -812,8 +812,35 @@ class AgentService {
         'required': ['phone', 'message'],
       },
     ),
+    Tool(
+      name: 'make_phone_call',
+      description: 'Make a phone call.',
+      parameters: {
+        'type': 'object',
+        'properties': {
+          'phone': {'type': 'string'},
+        },
+        'required': ['phone'],
+      },
+    ),
   ];
 
+  static final List<Tool> _phiTools = [
+    _tools.firstWhere((t) => t.name == 'get_date_time'),
+    _tools.firstWhere((t) => t.name == 'get_device_info'),
+    _tools.firstWhere((t) => t.name == 'check_connectivity'),
+    _tools.firstWhere((t) => t.name == 'search_web'),
+    _tools.firstWhere((t) => t.name == 'list_apps'),
+    _tools.firstWhere((t) => t.name == 'launch_app_by_name'),
+    _tools.firstWhere((t) => t.name == 'toggle_flashlight'),
+    _tools.firstWhere((t) => t.name == 'vibrate'),
+    _tools.firstWhere((t) => t.name == 'set_volume'),
+    _tools.firstWhere((t) => t.name == 'copy_to_clipboard'),
+    _tools.firstWhere((t) => t.name == 'read_clipboard'),
+    _tools.firstWhere((t) => t.name == 'open_url'),
+    _tools.firstWhere((t) => t.name == 'search_contacts'),
+    _tools.firstWhere((t) => t.name == 'make_phone_call'),
+  ];
 
   // Retrying addQuery for tool responses. MediaPipe's session sometimes
   // reports "Previous invocation still processing" right after a

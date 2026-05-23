@@ -248,19 +248,12 @@ class _ChatScreenState extends State<ChatScreen> {
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('last_used_model_file', widget.modelFileName);
       }
-      final sessions = await _dbService.getSessions();
-
       await _createNewChat(isInitial: true);
-      if (sessions.isNotEmpty) {
-        setState(() {
-          _sessions = sessions;
-          _isInitializing = false;
-        });
-      } else {
-        setState(() {
-          _isInitializing = false;
-        });
-      }
+      // _createNewChat calls _refreshSessions(), which updates _sessions.
+      // So we just need to disable the loading spinner now.
+      setState(() {
+        _isInitializing = false;
+      });
     } catch (e) {
       setState(() {
         _messages.add(ChatMessage(text: "Failed to initialize agent: $e", isUser: false));
@@ -270,6 +263,14 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _createNewChat({bool isInitial = false}) async {
+    // Clean up any empty 'New Chat' sessions that were never used to prevent clutter
+    final sessions = await _dbService.getSessions();
+    for (var s in sessions) {
+      if (s['title'] == 'New Chat') {
+        await _dbService.deleteSession(s['id'] as int);
+      }
+    }
+
     final newId = await _dbService.createSession('New Chat');
     _currentSessionId = newId;
     await _agentService.loadSession(newId);
@@ -411,8 +412,22 @@ class _ChatScreenState extends State<ChatScreen> {
         orElse: () => null,
       );
       if (session != null && session['title'] == 'New Chat') {
-        final titleText = text.isEmpty ? "Image Query" : text;
-        final newTitle = titleText.length > 25 ? '${titleText.substring(0, 22)}...' : titleText;
+        // Create a smarter title summary instead of just raw substring
+        String titleText = text.isEmpty ? "Image Query" : text.trim();
+        // Remove common prompt prefixes
+        final prefixes = ['can you ', 'how do i ', 'what is ', 'write a ', 'create a ', 'help me ', 'please ', 'tell me '];
+        for (final p in prefixes) {
+          if (titleText.toLowerCase().startsWith(p)) {
+            titleText = titleText.substring(p.length);
+          }
+        }
+        // Capitalize first letter
+        if (titleText.isNotEmpty) {
+          titleText = titleText[0].toUpperCase() + titleText.substring(1);
+        }
+        // Take first 3-4 words for a cleaner summary
+        final words = titleText.split(RegExp(r'\s+'));
+        final newTitle = words.take(4).join(' ') + (words.length > 4 ? '...' : '');
         await _dbService.updateSessionTitle(_currentSessionId!, newTitle);
         await _refreshSessions();
       }
@@ -536,9 +551,11 @@ class _ChatScreenState extends State<ChatScreen> {
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new_rounded, color: Colors.white70, size: 20),
-          onPressed: () => Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const HomeScreen())),
+        leading: Builder(
+          builder: (context) => IconButton(
+            icon: const Icon(Icons.menu_rounded, color: Colors.white70, size: 24),
+            onPressed: () => Scaffold.of(context).openDrawer(),
+          ),
         ),
         title: _isCloud
             ? Row(
@@ -650,11 +667,14 @@ class _ChatScreenState extends State<ChatScreen> {
         elevation: 0,
         backgroundColor: Colors.black,
         actions: [
-          Builder(
-            builder: (context) => IconButton(
-              icon: const Icon(Icons.history_rounded, size: 20, color: Colors.white70),
-              onPressed: () => Scaffold.of(context).openDrawer(),
-            ),
+          IconButton(
+            icon: const Icon(Icons.edit_square, size: 20, color: Colors.white70),
+            onPressed: () async {
+              try {
+                await _agentService.stopGeneration();
+              } catch (_) {}
+              _createNewChat();
+            },
           ),
           IconButton(
             icon: const Icon(Icons.settings_outlined, size: 20, color: Colors.white70),

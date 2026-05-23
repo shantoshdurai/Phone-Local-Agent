@@ -163,6 +163,10 @@ class ToolRuntime {
           final url = args['url'] as String? ?? '';
           if (url.isEmpty) return {'error': 'url required'};
           return {'success': await _utilityService.openUrl(url)};
+        case 'make_phone_call':
+          final phone = args['phone'] as String? ?? '';
+          if (phone.isEmpty) return {'error': 'phone number required'};
+          return {'success': await _utilityService.makePhoneCall(phone)};
         case 'launch_app_by_name':
           final appName = args['appName'] as String? ?? '';
           if (appName.isEmpty) return {'error': 'appName required'};
@@ -249,6 +253,11 @@ class ToolRuntime {
         return result['success'] == true
             ? 'Opening in your browser.'
             : 'Could not open that URL.';
+
+      case 'make_phone_call':
+        return result['success'] == true
+            ? 'Initiating phone call...'
+            : 'Could not initiate phone call.';
 
       case 'launch_app':
         return result['success'] == true
@@ -554,6 +563,22 @@ const List<Map<String, dynamic>> kToolCatalog = [
         'message': {'type': 'string'},
       },
       'required': ['phone', 'message'],
+    },
+  },
+  {
+    'name': 'make_phone_call',
+    'description':
+        'Open the dialer to make a phone call to a specified number. The phone '
+            'must come from search_contacts or directly from the user.',
+    'parameters': {
+      'type': 'object',
+      'properties': {
+        'phone': {
+          'type': 'string',
+          'description': 'Phone number to call.',
+        },
+      },
+      'required': ['phone'],
     },
   },
 ];
