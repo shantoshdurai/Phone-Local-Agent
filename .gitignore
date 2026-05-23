@@ -44,3 +44,7 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 .env
+
+# Local backup files from in-place edits
+*.orig
+*.patch
