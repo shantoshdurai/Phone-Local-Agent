@@ -139,7 +139,7 @@ class ModelRegistry {
     tagline: 'Chat-focused. Strong general reasoning (~3.8 GB).',
     modelType: ModelType.phi,
     fileType: ModelFileType.task,
-    preferredBackend: PreferredBackend.cpu,
+    preferredBackend: PreferredBackend.gpu,
     supportsVision: false,
     supportsTools: true,
     isThinking: false,
