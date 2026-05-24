@@ -274,9 +274,11 @@ class _VoiceModeScreenState extends State<VoiceModeScreen>
                                 : AppTheme.muted),
                         const SizedBox(height: 12),
                         Padding(
-                          padding:
-                              const EdgeInsets.symmetric(horizontal: 20),
-                          child: _transcript(),
+                          padding: const EdgeInsets.symmetric(horizontal: 20),
+                          child: SizedBox(
+                            width: double.infinity,
+                            child: _transcript(),
+                          ),
                         ),
                       ],
                     ),

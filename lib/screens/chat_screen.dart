@@ -488,39 +488,48 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
     );
   }
-
   Widget _buildHeader() {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       decoration: const BoxDecoration(
         border: Border(bottom: BorderSide(color: AppTheme.border)),
       ),
-      child: Row(
+      child: Stack(
+        alignment: Alignment.center,
         children: [
-          HeaderIconButton(
-            icon: Icons.menu_rounded,
-            size: 22,
-            onPressed: () => _scaffoldKey.currentState?.openDrawer(),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: HeaderIconButton(
+              icon: Icons.menu_rounded,
+              size: 22,
+              onPressed: () => _scaffoldKey.currentState?.openDrawer(),
+            ),
           ),
-          Expanded(
-            child: Center(child: _headerTitle()),
-          ),
-          HeaderIconButton(
-            icon: Icons.edit_outlined,
-            size: 18,
-            onPressed: () async {
-              try {
-                await _agentService.stopGeneration();
-              } catch (_) {}
-              _createNewChat();
-            },
-          ),
-          HeaderIconButton(
-            icon: Icons.settings_outlined,
-            size: 18,
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const SettingsScreen()),
+          _headerTitle(),
+          Align(
+            alignment: Alignment.centerRight,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                HeaderIconButton(
+                  icon: Icons.edit_outlined,
+                  size: 18,
+                  onPressed: () async {
+                    try {
+                      await _agentService.stopGeneration();
+                    } catch (_) {}
+                    _createNewChat();
+                  },
+                ),
+                HeaderIconButton(
+                  icon: Icons.settings_outlined,
+                  size: 18,
+                  onPressed: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const SettingsScreen()),
+                  ),
+                ),
+              ],
             ),
           ),
         ],
