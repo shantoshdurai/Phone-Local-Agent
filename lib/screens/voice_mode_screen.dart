@@ -109,6 +109,12 @@ class _VoiceModeScreenState extends State<VoiceModeScreen>
 
   Future<void> _startListening() async {
     if (_disposed) return;
+    try {
+      if (_stt.isListening) {
+        await _stt.cancel();
+        await Future.delayed(const Duration(milliseconds: 300));
+      }
+    } catch (_) {}
     _userTranscript = '';
     _agentReply = '';
     _setPhase(_VoicePhase.listening, label: 'LISTENING');
@@ -198,6 +204,7 @@ class _VoiceModeScreenState extends State<VoiceModeScreen>
       if (text.isNotEmpty) {
         _handleSubmit(text);
       } else {
+        await Future.delayed(const Duration(milliseconds: 300));
         _startListening();
       }
     } else {
