@@ -1,13 +1,15 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_animate/flutter_animate.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../theme/app_theme.dart';
+import '../widgets/design_components.dart';
 import '../services/agent_mode.dart';
 import 'api_key_setup_screen.dart';
 import 'home_screen.dart';
 
 const _kOnboardingSeenKey = 'onboarding_seen_v1';
 
+/// 03 · Mode selection — step 02/02 of onboarding.
 class ModeSelectionScreen extends StatefulWidget {
   const ModeSelectionScreen({super.key});
 
@@ -16,22 +18,17 @@ class ModeSelectionScreen extends StatefulWidget {
 }
 
 class _ModeSelectionScreenState extends State<ModeSelectionScreen> {
-  AgentMode? _selected;
+  AgentMode _selected = AgentMode.local;
   bool _saving = false;
 
   Future<void> _confirm() async {
-    if (_selected == null || _saving) return;
+    if (_saving) return;
     setState(() => _saving = true);
-
-    await AgentModeStore.write(_selected!);
-
+    await AgentModeStore.write(_selected);
     if (!mounted) return;
-
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_kOnboardingSeenKey, true);
-
     if (!mounted) return;
-
     if (_selected == AgentMode.cloud) {
       Navigator.of(context).pushReplacement(
         PageRouteBuilder(
@@ -51,74 +48,68 @@ class _ModeSelectionScreenState extends State<ModeSelectionScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: AppTheme.glassBg,
+      backgroundColor: AppTheme.bg,
       body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
-          physics: const BouncingScrollPhysics(),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(24, 20, 24, 24),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Align(
                 alignment: Alignment.centerRight,
-                child: Text('Step 2 of 2', style: AppTextStyles.mono.copyWith(color: AppTheme.glassMuted, fontSize: 12))
-                    .animate().fadeIn(duration: 400.ms),
+                child: const Eyebrow('STEP 02 / 02'),
               ),
-              const SizedBox(height: 32),
+              const SizedBox(height: 18),
               Text(
                 'Where should\nthe agent run?',
-                style: AppTextStyles.heading.copyWith(fontSize: 32, color: AppTheme.glassInk, letterSpacing: -1.0, height: 1.1),
-              ).animate().fadeIn(delay: 100.ms).moveY(begin: 12, end: 0),
-              const SizedBox(height: 12),
+                style: GoogleFonts.interTight(
+                  fontSize: 28,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: -0.8,
+                  height: 1.1,
+                  color: AppTheme.ink,
+                ),
+              ),
+              const SizedBox(height: 8),
               Text(
-                'You can switch later in Settings. Local stays private; Cloud is faster and smarter, but uses your own API key.',
-                style: AppTextStyles.body.copyWith(color: AppTheme.glassInk2, fontSize: 14),
-              ).animate().fadeIn(delay: 200.ms),
-              const SizedBox(height: 32),
+                'You can switch later in Settings. Local stays private; '
+                'Cloud is faster and smarter, but uses your own API key.',
+                style: GoogleFonts.interTight(
+                  fontSize: 14,
+                  height: 1.55,
+                  color: AppTheme.ink2,
+                ),
+              ),
+              const SizedBox(height: 24),
               _modeCard(
                 mode: AgentMode.local,
-                icon: Icons.smartphone_rounded,
-                badge: 'PRIVATE',
+                icon: Icons.smartphone_outlined,
                 title: 'Run on this device',
+                badge: 'PRIVATE',
                 bullets: const [
-                  ('Offline', 'No internet needed once model is downloaded.'),
-                  ('Free', 'No usage costs, ever.'),
-                  ('Limited', 'Small phone models miss tool calls sometimes.'),
+                  ('Offline.', 'No internet needed once the model is downloaded.'),
+                  ('Free.', 'No usage costs, ever.'),
+                  ('Limited.', 'Small phone models occasionally miss tool calls.'),
                 ],
-              ).animate().fadeIn(delay: 300.ms).moveY(begin: 14, end: 0),
-              const SizedBox(height: 16),
+              ),
+              const SizedBox(height: 12),
               _modeCard(
                 mode: AgentMode.cloud,
-                icon: Icons.cloud_rounded,
+                icon: Icons.cloud_outlined,
+                title: 'Use API (your key)',
                 badge: 'BYO KEY',
-                title: 'Use Gemini (your key)',
                 bullets: const [
-                  ('Smarter', 'Reliable tool calling, multi-step agent flows.'),
-                  ('Generous', 'ai.google.dev gives 1,500 requests/day at no cost.'),
-                  ('Cloud', 'Your chats are sent to Google with your API key.'),
+                  ('Smarter.', 'Reliable tool calling, multi-step agent flows.'),
+                  ('Generous.', '1,500 free requests/day on ai.google.dev.'),
                 ],
-              ).animate().fadeIn(delay: 400.ms).moveY(begin: 14, end: 0),
-              const SizedBox(height: 32),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: _selected == null ? null : _confirm,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppTheme.glassInk,
-                    foregroundColor: AppTheme.glassBg,
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                    elevation: 0,
-                  ),
-                  child: _saving
-                      ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: AppTheme.glassBg, strokeWidth: 2))
-                      : Text(
-                          _selected == AgentMode.cloud ? 'CONTINUE TO API SETUP' : 'CONTINUE',
-                          style: AppTextStyles.bodyStrong.copyWith(fontSize: 14),
-                        ),
-                ),
-              ).animate().fadeIn(delay: 600.ms),
-              const SizedBox(height: 10),
+              ),
+              const Spacer(),
+              const SizedBox(height: 18),
+              PrimaryButton(
+                onPressed: _saving ? null : _confirm,
+                label: 'Continue',
+                isLoading: _saving,
+              ),
             ],
           ),
         ),
@@ -129,76 +120,116 @@ class _ModeSelectionScreenState extends State<ModeSelectionScreen> {
   Widget _modeCard({
     required AgentMode mode,
     required IconData icon,
-    required String badge,
     required String title,
+    required String badge,
     required List<(String, String)> bullets,
   }) {
     final selected = _selected == mode;
-    return InkWell(
-      borderRadius: BorderRadius.circular(16),
+    return DesignCard(
+      selected: selected,
       onTap: () => setState(() => _selected = mode),
-      child: Container(
-        padding: const EdgeInsets.all(20),
-        decoration: BoxDecoration(
-          color: selected ? AppTheme.glassSurface2 : AppTheme.glassBg2,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(
-            color: selected ? AppTheme.glassInk : AppTheme.glassBorder,
-            width: selected ? 2 : 1,
-          ),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(icon, color: AppTheme.glassInk, size: 24),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(title, style: AppTextStyles.heading.copyWith(color: AppTheme.glassInk, fontSize: 18)),
-                      const SizedBox(height: 4),
-                      Text(badge, style: AppTextStyles.mono.copyWith(color: AppTheme.glassMuted, fontSize: 10, fontWeight: FontWeight.bold)),
-                    ],
-                  ),
-                ),
-                Icon(
-                  selected ? Icons.radio_button_checked : Icons.radio_button_unchecked,
-                  color: selected ? AppTheme.glassInk : AppTheme.glassMuted,
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            for (final b in bullets)
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
               Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: Row(
+                padding: const EdgeInsets.only(top: 1),
+                child: Icon(icon, size: 22, color: AppTheme.ink),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Container(
-                      margin: const EdgeInsets.only(top: 6, right: 10),
-                      width: 4, height: 4,
-                      decoration: const BoxDecoration(shape: BoxShape.circle, color: AppTheme.glassMuted),
-                    ),
-                    Expanded(
-                      child: RichText(
-                        text: TextSpan(
-                          style: AppTextStyles.body.copyWith(color: AppTheme.glassInk2, fontSize: 13, height: 1.4),
-                          children: [
-                            TextSpan(text: '${b.$1}  ', style: AppTextStyles.bodyStrong.copyWith(color: AppTheme.glassInk)),
-                            TextSpan(text: b.$2),
-                          ],
-                        ),
+                    Text(
+                      title,
+                      style: GoogleFonts.interTight(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                        height: 1.2,
+                        color: AppTheme.ink,
                       ),
                     ),
+                    const SizedBox(height: 5),
+                    Eyebrow(badge),
                   ],
                 ),
               ),
-          ],
+              _radio(selected),
+            ],
+          ),
+          const SizedBox(height: 14),
+          for (final b in bullets)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    margin: const EdgeInsets.only(top: 8, right: 10),
+                    width: 4,
+                    height: 4,
+                    decoration: const BoxDecoration(
+                      color: AppTheme.muted,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                  Expanded(
+                    child: RichText(
+                      text: TextSpan(
+                        style: GoogleFonts.interTight(
+                          fontSize: 12.5,
+                          height: 1.45,
+                          color: AppTheme.ink2,
+                        ),
+                        children: [
+                          TextSpan(
+                            text: '${b.$1} ',
+                            style: GoogleFonts.interTight(
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w600,
+                              color: AppTheme.ink,
+                            ),
+                          ),
+                          TextSpan(text: b.$2),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _radio(bool selected) {
+    return Container(
+      width: 20,
+      height: 20,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: selected ? AppTheme.ink : Colors.transparent,
+        border: Border.all(
+          color: selected ? AppTheme.ink : AppTheme.muted,
+          width: 1.5,
         ),
       ),
+      child: selected
+          ? Center(
+              child: Container(
+                width: 8,
+                height: 8,
+                decoration: const BoxDecoration(
+                  color: AppTheme.bg,
+                  shape: BoxShape.circle,
+                ),
+              ),
+            )
+          : null,
     );
   }
 }

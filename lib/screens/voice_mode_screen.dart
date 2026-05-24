@@ -6,14 +6,11 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 import '../services/agent_service.dart';
 import '../services/database_service.dart';
+import '../theme/app_theme.dart';
+import '../widgets/design_components.dart';
 
-/// Hands-free voice loop: listen → think → speak → listen.
-///
-/// Mirrors ChatGPT's voice mode in spirit: full-screen black, one big orb, no
-/// chat scroll. Each phase has its own orb animation and one-line status so
-/// the user can also debug if a tool fires — the tool name shows on screen
-/// but only the natural-language reply is spoken.
-enum _VoicePhase { idle, listening, thinking, speaking, error }
+/// 08 · Voice mode — hands-free loop. Listen → think → speak → listen.
+enum _VoicePhase { idle, listening, thinking, speaking, error, muted }
 
 class VoiceModeScreen extends StatefulWidget {
   final int sessionId;
@@ -30,45 +27,62 @@ class _VoiceModeScreenState extends State<VoiceModeScreen>
   final SpeechToText _stt = SpeechToText();
   final FlutterTts _tts = FlutterTts();
 
-  late final AnimationController _orbController;
-
+  late final AnimationController _ringController;
   StreamSubscription? _statusSub;
 
   _VoicePhase _phase = _VoicePhase.idle;
-  String _statusLabel = 'Tap to start';
+  String _statusLabel = 'TAP TO START';
   String _userTranscript = '';
   String _agentReply = '';
-  String? _activeToolName;
-  // Live mic level from speech_to_text, smoothed for the orb pulse.
-  double _soundLevel = 0.0;
-  // True after user explicitly closed the screen — stop all loops.
   bool _disposed = false;
 
   @override
   void initState() {
     super.initState();
-    _orbController = AnimationController(
+    _ringController = AnimationController(
       vsync: this,
-      duration: const Duration(seconds: 4),
+      duration: const Duration(milliseconds: 2800),
     )..repeat();
-
     _statusSub = _agent.statusStream.listen(_onAgentStatus);
     _bootstrap();
   }
 
   Future<void> _bootstrap() async {
     final sttOk = await _stt.initialize(
-      onError: (e) => _failWith('Speech recognition error'),
-      onStatus: (_) {},
+      onError: (e) {
+        if (_disposed) return;
+        final msg = e.errorMsg.toLowerCase();
+        if (msg.contains('timeout') ||
+            msg.contains('no_match') ||
+            msg.contains('no match')) {
+          if (_phase == _VoicePhase.listening) {
+            Future.delayed(const Duration(milliseconds: 100), () {
+              if (_phase == _VoicePhase.listening && !_disposed) {
+                _startListening();
+              }
+            });
+          }
+        } else {
+          _failWith('Error: ${e.errorMsg}');
+        }
+      },
+      onStatus: (status) {
+        if (_disposed) return;
+        if (status == 'notListening' || status == 'done') {
+          if (_phase == _VoicePhase.listening) {
+            Future.delayed(const Duration(milliseconds: 100), () {
+              if (_phase == _VoicePhase.listening && !_disposed) {
+                _startListening();
+              }
+            });
+          }
+        }
+      },
     );
     if (!sttOk) {
       _failWith('Speech recognition not available');
       return;
     }
-
-    // Explicit language + awaitSpeakCompletion are required on Android for
-    // speak() to reliably block until done and for handlers to fire. Without
-    // them, speak() can silently no-op on the first call after a cold start.
     try {
       await _tts.setLanguage('en-US');
     } catch (_) {}
@@ -76,23 +90,14 @@ class _VoiceModeScreenState extends State<VoiceModeScreen>
     await _tts.setPitch(1.0);
     await _tts.setVolume(1.0);
     await _tts.awaitSpeakCompletion(true);
-
     _startListening();
   }
 
   void _onAgentStatus(String status) {
     if (_disposed || _phase != _VoicePhase.thinking) return;
     if (status.isEmpty) return;
-    // Status messages are short like "Running search_web..." or "Thinking..."
-    // — surface them as the live status label and remember tool name if any.
-    final match = RegExp(r'^Running (\w+)').firstMatch(status);
-    if (match != null) {
-      _activeToolName = match.group(1);
-    }
-    setState(() => _statusLabel = status.replaceAll('...', '').trim());
+    setState(() => _statusLabel = status.replaceAll('...', '').toUpperCase().trim());
   }
-
-  // ─── State transitions ───
 
   void _setPhase(_VoicePhase next, {required String label}) {
     if (_disposed) return;
@@ -106,10 +111,7 @@ class _VoiceModeScreenState extends State<VoiceModeScreen>
     if (_disposed) return;
     _userTranscript = '';
     _agentReply = '';
-    _activeToolName = null;
-    _soundLevel = 0.0;
-    _setPhase(_VoicePhase.listening, label: 'Listening');
-
+    _setPhase(_VoicePhase.listening, label: 'LISTENING');
     await _stt.listen(
       onResult: (result) {
         if (_disposed) return;
@@ -117,12 +119,6 @@ class _VoiceModeScreenState extends State<VoiceModeScreen>
         if (result.finalResult && _userTranscript.trim().isNotEmpty) {
           _handleSubmit(_userTranscript.trim());
         }
-      },
-      onSoundLevelChange: (level) {
-        if (_disposed) return;
-        // speech_to_text emits dB-ish values roughly -2..10. Normalize to 0..1.
-        final normalized = ((level + 2) / 12.0).clamp(0.0, 1.0);
-        setState(() => _soundLevel = normalized);
       },
       listenOptions: SpeechListenOptions(
         partialResults: true,
@@ -136,31 +132,21 @@ class _VoiceModeScreenState extends State<VoiceModeScreen>
 
   Future<void> _handleSubmit(String text) async {
     if (_disposed) return;
-    // Cancel (not stop) makes speech_to_text release the audio session
-    // synchronously so TTS can immediately take it. With stop() Android
-    // sometimes holds the mic line and TTS plays silently.
     try {
       await _stt.cancel();
     } catch (_) {}
-    _setPhase(_VoicePhase.thinking, label: 'Thinking');
-
+    _setPhase(_VoicePhase.thinking, label: 'THINKING');
     try {
-      // Persist the user's spoken turn so it shows up in the chat list when
-      // they exit voice mode. The assistant turn is saved inside sendMessage.
       await _db.saveMessage('user', text, widget.sessionId);
       final response = await _agent.sendMessage(text, widget.sessionId);
       if (_disposed) return;
-      // Strip markdown so TTS doesn't read "asterisk asterisk".
       final spoken = _stripForTts(response.text);
       setState(() => _agentReply = response.text);
       if (spoken.isEmpty) {
         _startListening();
         return;
       }
-      _setPhase(_VoicePhase.speaking, label: 'Speaking');
-      // awaitSpeakCompletion(true) makes this future complete when TTS
-      // actually finishes — much more reliable than the setCompletionHandler
-      // callback, which can silently miss on Android.
+      _setPhase(_VoicePhase.speaking, label: 'SPEAKING');
       await _tts.speak(spoken);
       if (_disposed) return;
       _startListening();
@@ -171,12 +157,12 @@ class _VoiceModeScreenState extends State<VoiceModeScreen>
 
   String _stripForTts(String text) {
     return text
-        .replaceAll(RegExp(r'\*\*(.*?)\*\*'), r'$1') // bold
-        .replaceAll(RegExp(r'\*(.*?)\*'), r'$1') // italic
-        .replaceAll(RegExp(r'`([^`]+)`'), r'$1') // inline code
-        .replaceAll(RegExp(r'```[\s\S]*?```'), '') // code blocks
-        .replaceAll(RegExp(r'#+\s*'), '') // headings
-        .replaceAll(RegExp(r'\[(.*?)\]\((.*?)\)'), r'$1') // links → text
+        .replaceAll(RegExp(r'\*\*(.*?)\*\*'), r'$1')
+        .replaceAll(RegExp(r'\*(.*?)\*'), r'$1')
+        .replaceAll(RegExp(r'`([^`]+)`'), r'$1')
+        .replaceAll(RegExp(r'```[\s\S]*?```'), '')
+        .replaceAll(RegExp(r'#+\s*'), '')
+        .replaceAll(RegExp(r'\[(.*?)\]\((.*?)\)'), r'$1')
         .trim();
   }
 
@@ -184,11 +170,40 @@ class _VoiceModeScreenState extends State<VoiceModeScreen>
     if (_disposed) return;
     setState(() {
       _phase = _VoicePhase.error;
-      _statusLabel = label;
+      _statusLabel = label.toUpperCase();
     });
   }
 
-  // ─── User actions ───
+  Future<void> _toggleMute() async {
+    if (_phase == _VoicePhase.muted) {
+      _startListening();
+    } else {
+      try {
+        await _stt.stop();
+      } catch (_) {}
+      try {
+        await _tts.stop();
+      } catch (_) {}
+      _setPhase(_VoicePhase.muted, label: 'MUTED');
+    }
+  }
+
+  Future<void> _tapMic() async {
+    if (_phase == _VoicePhase.speaking) {
+      await _tts.stop();
+      _startListening();
+    } else if (_phase == _VoicePhase.listening) {
+      await _stt.stop();
+      final text = _userTranscript.trim();
+      if (text.isNotEmpty) {
+        _handleSubmit(text);
+      } else {
+        _startListening();
+      }
+    } else {
+      _startListening();
+    }
+  }
 
   Future<void> _close() async {
     _disposed = true;
@@ -201,269 +216,279 @@ class _VoiceModeScreenState extends State<VoiceModeScreen>
     if (mounted) Navigator.of(context).pop();
   }
 
-  /// Tap the orb to interrupt the current phase and restart listening.
-  Future<void> _tapOrb() async {
-    if (_phase == _VoicePhase.speaking) {
-      await _tts.stop();
-      _startListening();
-    } else if (_phase == _VoicePhase.listening) {
-      // Force-finalize whatever's recognized so far.
-      await _stt.stop();
-      final text = _userTranscript.trim();
-      if (text.isNotEmpty) {
-        _handleSubmit(text);
-      } else {
-        _startListening();
-      }
-    } else if (_phase == _VoicePhase.error || _phase == _VoicePhase.idle) {
-      _startListening();
-    }
-  }
-
   @override
   void dispose() {
     _disposed = true;
-    _orbController.dispose();
+    _ringController.dispose();
     _statusSub?.cancel();
     _stt.stop();
     _tts.stop();
     super.dispose();
   }
 
-  // ─── UI ───
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.black,
+      backgroundColor: AppTheme.bg,
       body: SafeArea(
         child: Column(
           children: [
-            // Top bar — symmetric so the title is truly centered.
-            SizedBox(
-              height: 56,
+            // Top bar — close left, eyebrow center, settings right.
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               child: Row(
                 children: [
-                  const SizedBox(width: 56),
+                  HeaderIconButton(icon: Icons.close_rounded, onPressed: _close),
                   Expanded(
-                    child: Center(
-                      child: Text(
-                        'Voice mode',
-                        style: GoogleFonts.outfit(
-                          color: Colors.white.withValues(alpha: 0.55),
-                          fontSize: 13,
-                          letterSpacing: 1.6,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
+                    child: Center(child: Eyebrow('VOICE MODE · LOCAL')),
                   ),
-                  SizedBox(
-                    width: 56,
-                    child: IconButton(
-                      icon: const Icon(Icons.close_rounded,
-                          color: Colors.white70, size: 26),
-                      onPressed: _close,
-                    ),
+                  HeaderIconButton(
+                    icon: Icons.settings_outlined,
+                    size: 18,
+                    onPressed: () {},
                   ),
                 ],
               ),
             ),
             Expanded(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  GestureDetector(
-                    onTap: _tapOrb,
-                    child: _Orb(
-                      controller: _orbController,
-                      phase: _phase,
-                      soundLevel: _soundLevel,
-                    ),
+              child: Container(
+                width: double.infinity,
+                decoration: const BoxDecoration(
+                  gradient: RadialGradient(
+                    radius: 0.9,
+                    center: Alignment(0, -0.6),
+                    colors: [Color(0xFF1A1A1A), AppTheme.bg],
+                    stops: [0.0, 0.65],
                   ),
-                  const SizedBox(height: 28),
-                  _statusLine(),
-                  const SizedBox(height: 12),
-                  _transcriptBlock(),
-                ],
+                ),
+                child: Stack(
+                  children: [
+                    Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        GestureDetector(onTap: _tapMic, child: _blob()),
+                        const SizedBox(height: 36),
+                        Eyebrow(_statusLabel,
+                            color: _phase == _VoicePhase.error
+                                ? AppTheme.error
+                                : AppTheme.muted),
+                        const SizedBox(height: 12),
+                        Padding(
+                          padding:
+                              const EdgeInsets.symmetric(horizontal: 20),
+                          child: _transcript(),
+                        ),
+                      ],
+                    ),
+                    Positioned(
+                      left: 0,
+                      right: 0,
+                      bottom: 28,
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          _fab(
+                              icon: _phase == _VoicePhase.muted
+                                  ? Icons.mic_off_rounded
+                                  : Icons.mic_off_outlined,
+                              onTap: _toggleMute),
+                          const SizedBox(width: 40),
+                          _fab(icon: Icons.mic_rounded, primary: true, onTap: _tapMic),
+                          const SizedBox(width: 40),
+                          _fab(icon: Icons.close_rounded, onTap: _close),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
-            const SizedBox(height: 24),
           ],
         ),
       ),
     );
   }
 
-  Widget _statusLine() {
-    Color color;
-    switch (_phase) {
-      case _VoicePhase.listening:
-        color = const Color(0xFF3B82F6);
-        break;
-      case _VoicePhase.thinking:
-        color = const Color(0xFFFBBF24);
-        break;
-      case _VoicePhase.speaking:
-        color = const Color(0xFF34D399);
-        break;
-      case _VoicePhase.error:
-        color = const Color(0xFFF87171);
-        break;
-      case _VoicePhase.idle:
-        color = Colors.white54;
-        break;
+  Widget _blob() {
+    return AnimatedBuilder(
+      animation: _ringController,
+      builder: (context, _) {
+        final t = _ringController.value;
+        return SizedBox(
+          width: 280,
+          height: 280,
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              // Animated outer ring
+              Transform.scale(
+                scale: 0.9 + 0.4 * t,
+                child: Opacity(
+                  opacity: (1 - t) * 0.6,
+                  child: Container(
+                    width: 280,
+                    height: 280,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: Colors.white.withValues(alpha: 0.08),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              // Core blob
+              Container(
+                width: 220,
+                height: 220,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  gradient: const RadialGradient(
+                    radius: 0.9,
+                    center: Alignment(0, -0.2),
+                    colors: [
+                      Color(0xFFFFFFFF),
+                      Color(0xFFD8D8D8),
+                      Color(0xFF404040),
+                      Color(0xFF0A0A0A),
+                    ],
+                    stops: [0.0, 0.3, 0.75, 1.0],
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.white.withValues(alpha: 0.06),
+                      blurRadius: 60,
+                    ),
+                  ],
+                ),
+                child: AnimatedBuilder(
+                  animation: _ringController,
+                  builder: (context, _) {
+                    final pulse = (math.sin(t * math.pi * 2) + 1) / 2;
+                    return Container(
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        boxShadow: _phase == _VoicePhase.idle ||
+                                _phase == _VoicePhase.muted
+                            ? null
+                            : [
+                                BoxShadow(
+                                  color: Colors.white
+                                      .withValues(alpha: 0.04 + pulse * 0.04),
+                                  blurRadius: 80,
+                                ),
+                              ],
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _transcript() {
+    final showUser = _userTranscript.isNotEmpty;
+    final showReply = _agentReply.isNotEmpty;
+    final muted = const Color(0xFF707070);
+    if (!showUser && !showReply) {
+      return Text(
+        _phase == _VoicePhase.muted ? 'Mic is off' : 'Say something to begin',
+        textAlign: TextAlign.center,
+        style: GoogleFonts.interTight(
+          fontSize: 22,
+          fontWeight: FontWeight.w500,
+          letterSpacing: -0.4,
+          height: 1.3,
+          color: muted,
+        ),
+      );
     }
-    return Text(
-      _statusLabel,
-      style: GoogleFonts.outfit(
-        color: color,
-        fontSize: 16,
-        fontWeight: FontWeight.w500,
+    return RichText(
+      textAlign: TextAlign.center,
+      text: TextSpan(
+        style: GoogleFonts.interTight(
+          fontSize: 22,
+          fontWeight: FontWeight.w500,
+          letterSpacing: -0.4,
+          height: 1.3,
+          color: AppTheme.ink,
+        ),
+        children: [
+          if (showReply)
+            TextSpan(text: _agentReply)
+          else ...[
+            TextSpan(text: _quoteWrap(_userTranscript)),
+            const WidgetSpan(child: _BlinkingCaret()),
+          ],
+        ],
       ),
     );
   }
 
-  Widget _transcriptBlock() {
-    final hasUser = _userTranscript.trim().isNotEmpty;
-    final hasReply = _agentReply.trim().isNotEmpty;
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 28),
-      child: Column(
-        children: [
-          if (_activeToolName != null && _phase == _VoicePhase.thinking)
-            Padding(
-              padding: const EdgeInsets.only(top: 4, bottom: 10),
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.05),
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(
-                      color: Colors.white.withValues(alpha: 0.08)),
-                ),
-                child: Text(
-                  'Tool: $_activeToolName',
-                  style: GoogleFonts.firaCode(
-                    fontSize: 11,
-                    color: const Color(0xFFFBBF24),
-                  ),
-                ),
-              ),
-            ),
-          if (hasUser)
-            Padding(
-              padding: const EdgeInsets.only(top: 14),
-              child: Text(
-                _userTranscript,
-                textAlign: TextAlign.center,
-                style: GoogleFonts.outfit(
-                  fontSize: 15,
-                  color: Colors.white54,
-                  height: 1.4,
-                ),
-              ),
-            ),
-          if (hasReply)
-            Padding(
-              padding: const EdgeInsets.only(top: 18),
-              child: Text(
-                _agentReply,
-                textAlign: TextAlign.center,
-                style: GoogleFonts.outfit(
-                  fontSize: 17,
-                  color: Colors.white,
-                  height: 1.5,
-                ),
-              ),
-            ),
-        ],
+  String _quoteWrap(String s) => '"$s"';
+
+  Widget _fab(
+      {required IconData icon, bool primary = false, required VoidCallback onTap}) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: 56,
+        height: 56,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: primary ? AppTheme.ink : AppTheme.surface,
+          border: Border.all(
+            color: primary ? AppTheme.ink : AppTheme.border2,
+          ),
+        ),
+        child: Icon(icon,
+            size: primary ? 22 : 20,
+            color: primary ? AppTheme.bg : AppTheme.ink),
       ),
     );
   }
 }
 
-class _Orb extends StatelessWidget {
-  final AnimationController controller;
-  final _VoicePhase phase;
-  final double soundLevel;
+class _BlinkingCaret extends StatefulWidget {
+  const _BlinkingCaret();
 
-  const _Orb({
-    required this.controller,
-    required this.phase,
-    required this.soundLevel,
-  });
+  @override
+  State<_BlinkingCaret> createState() => _BlinkingCaretState();
+}
 
-  Color get _primary {
-    switch (phase) {
-      case _VoicePhase.listening:
-        return const Color(0xFF3B82F6);
-      case _VoicePhase.thinking:
-        return const Color(0xFFFBBF24);
-      case _VoicePhase.speaking:
-        return const Color(0xFF34D399);
-      case _VoicePhase.error:
-        return const Color(0xFFF87171);
-      case _VoicePhase.idle:
-        return Colors.white24;
-    }
+class _BlinkingCaretState extends State<_BlinkingCaret>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _c;
+  @override
+  void initState() {
+    super.initState();
+    _c = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 1),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
-      animation: controller,
+      animation: _c,
       builder: (context, _) {
-        final t = controller.value;
-        // Base pulse — slow heartbeat. Mic level adds responsive bloom while
-        // listening; a faster shimmer kicks in during thinking/speaking.
-        double pulse;
-        switch (phase) {
-          case _VoicePhase.listening:
-            pulse = 0.5 + soundLevel * 0.5;
-            break;
-          case _VoicePhase.thinking:
-            pulse = 0.55 + 0.45 * (0.5 + 0.5 * math.sin(t * 2 * math.pi * 1.4));
-            break;
-          case _VoicePhase.speaking:
-            pulse = 0.6 + 0.4 * (0.5 + 0.5 * math.sin(t * 2 * math.pi * 2.2));
-            break;
-          case _VoicePhase.error:
-            pulse = 0.45;
-            break;
-          case _VoicePhase.idle:
-            pulse = 0.5 + 0.1 * (0.5 + 0.5 * math.sin(t * 2 * math.pi));
-            break;
-        }
-        final base = 160.0;
-        final size = base + pulse * 40;
-        return SizedBox(
-          width: base + 80,
-          height: base + 80,
-          child: Center(
-            child: Container(
-              width: size,
-              height: size,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                gradient: RadialGradient(
-                  colors: [
-                    _primary.withValues(alpha: 0.95),
-                    _primary.withValues(alpha: 0.35),
-                    Colors.transparent,
-                  ],
-                  stops: const [0.0, 0.55, 1.0],
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: _primary.withValues(alpha: 0.45),
-                    blurRadius: 50 + pulse * 30,
-                    spreadRadius: 4 + pulse * 8,
-                  ),
-                ],
-              ),
-            ),
+        final on = _c.value < 0.5;
+        return Padding(
+          padding: const EdgeInsets.only(left: 2),
+          child: Opacity(
+            opacity: on ? 1 : 0,
+            child: Container(width: 7, height: 22, color: AppTheme.ink),
           ),
         );
       },

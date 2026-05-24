@@ -1,32 +1,29 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:flutter_animate/flutter_animate.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:flutter_contacts/flutter_contacts.dart';
-import 'package:device_calendar/device_calendar.dart';
 import '../theme/app_theme.dart';
-import '../widgets/glass_widgets.dart';
+import '../widgets/design_components.dart';
 import 'mode_selection_screen.dart';
 
-enum PermStatus { pending, granted, denied }
+enum _PermState { granted, optional, ask }
 
 class _PermItem {
-  final String key;
   final IconData icon;
   final String title;
   final String subtitle;
-  PermStatus status = PermStatus.pending;
+  final String permKey; // logical key for _platformRequest
+  _PermState state;
   _PermItem({
-    required this.key,
     required this.icon,
     required this.title,
     required this.subtitle,
+    required this.permKey,
+    this.state = _PermState.ask,
   });
 }
 
-/// One card per permission. The user taps each individually — no bulk
-/// "grant everything" button, because Android dialogs are sequential anyway
-/// and users feel more comfortable when each ask is its own decision.
+/// 02 · Permissions — STEP 01/02 of onboarding.
 class PermissionsScreen extends StatefulWidget {
   const PermissionsScreen({super.key});
 
@@ -37,78 +34,90 @@ class PermissionsScreen extends StatefulWidget {
 class _PermissionsScreenState extends State<PermissionsScreen> {
   final List<_PermItem> _perms = [
     _PermItem(
-      key: 'storage',
-      icon: Icons.folder_rounded,
-      title: 'Storage',
-      subtitle: 'Save model files and access local files for tools.',
+      icon: Icons.folder_outlined,
+      title: 'Files & storage',
+      subtitle: 'Read, organize, and search documents.',
+      permKey: 'storage',
     ),
     _PermItem(
-      key: 'notification',
-      icon: Icons.notifications_active_rounded,
-      title: 'Notifications',
-      subtitle: 'Keep inference running in the background.',
+      icon: Icons.grid_view_rounded,
+      title: 'Installed apps',
+      subtitle: 'List, open, and manage applications.',
+      permKey: 'apps',
     ),
     _PermItem(
-      key: 'microphone',
-      icon: Icons.mic_rounded,
+      icon: Icons.image_outlined,
+      title: 'Photos & screenshots',
+      subtitle: 'Analyze images with on-device vision.',
+      permKey: 'photos',
+    ),
+    _PermItem(
+      icon: Icons.mic_none_rounded,
       title: 'Microphone',
-      subtitle: 'Talk to the agent hands-free in voice mode.',
+      subtitle: 'Voice input and speech-to-text.',
+      permKey: 'microphone',
     ),
     _PermItem(
-      key: 'contacts',
-      icon: Icons.contacts_rounded,
-      title: 'Contacts',
-      subtitle: 'Look up people when you ask the agent to message someone.',
+      icon: Icons.public_rounded,
+      title: 'Network',
+      subtitle: 'Required for downloading tools and packages.',
+      permKey: 'network',
+      state: _PermState.optional,
     ),
     _PermItem(
-      key: 'calendar',
-      icon: Icons.event_rounded,
-      title: 'Calendar',
-      subtitle: 'Create and read events when you schedule things.',
+      icon: Icons.bolt_rounded,
+      title: 'Device settings',
+      subtitle: 'Flashlight, vibration, volume, brightness.',
+      permKey: 'device',
     ),
   ];
 
-  bool _busyKey(String? k) => _activeKey == k;
-  String? _activeKey;
-
-  Future<void> _requestOne(_PermItem p) async {
-    if (_activeKey != null) return;
-    setState(() => _activeKey = p.key);
-    try {
-      final granted = await _platformRequest(p.key);
-      if (!mounted) return;
-      setState(() => p.status = granted ? PermStatus.granted : PermStatus.denied);
-    } finally {
-      if (mounted) setState(() => _activeKey = null);
-    }
-  }
+  bool _busy = false;
 
   Future<bool> _platformRequest(String key) async {
     try {
       switch (key) {
         case 'storage':
           if (Platform.isAndroid) {
-            final manage = await Permission.manageExternalStorage.request();
-            if (manage.isGranted) return true;
-            final basic = await Permission.storage.request();
-            return basic.isGranted;
+            final m = await Permission.manageExternalStorage.request();
+            if (m.isGranted) return true;
+            return (await Permission.storage.request()).isGranted;
           }
           return true;
-        case 'notification':
-          return (await Permission.notification.request()).isGranted;
+        case 'photos':
+          if (Platform.isAndroid) {
+            final p = await Permission.photos.request();
+            return p.isGranted || (await Permission.storage.request()).isGranted;
+          }
+          return (await Permission.photos.request()).isGranted;
         case 'microphone':
           return (await Permission.microphone.request()).isGranted;
-        case 'contacts':
-          return await FlutterContacts.requestPermission(readonly: false);
-        case 'calendar':
-          final plugin = DeviceCalendarPlugin();
-          final r = await plugin.requestPermissions();
-          return r.isSuccess && (r.data ?? false);
+        case 'apps':
+        case 'network':
+        case 'device':
+          // Not real Android permissions — installed_apps queryable apps,
+          // INTERNET (auto-granted), and settings actions don't need runtime
+          // grants. Treat as ok.
+          return true;
       }
     } catch (_) {
       return false;
     }
     return false;
+  }
+
+  Future<void> _grantAll() async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    for (final p in _perms) {
+      if (p.state == _PermState.granted) continue;
+      final ok = await _platformRequest(p.permKey);
+      if (!mounted) return;
+      setState(() => p.state = ok ? _PermState.granted : _PermState.ask);
+    }
+    if (!mounted) return;
+    setState(() => _busy = false);
+    _continue();
   }
 
   void _continue() {
@@ -122,127 +131,75 @@ class _PermissionsScreenState extends State<PermissionsScreen> {
     );
   }
 
-  int get _grantedCount =>
-      _perms.where((p) => p.status == PermStatus.granted).length;
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: AppTheme.glassBg,
-      extendBodyBehindAppBar: true,
-      body: Stack(
-        children: [
-          const AuroraBackground(),
-          SafeArea(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
-              physics: const BouncingScrollPhysics(),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Align(
-                    alignment: Alignment.centerRight,
-                    child: const StepIndicator(step: 1, total: 2)
-                        .animate()
-                        .fadeIn(duration: 400.ms),
-                  ),
-                  const SizedBox(height: 28),
-                  Text(
-                    'App permissions',
-                    style: AppTextStyles.heading.copyWith(
-                      fontSize: 32,
-                      color: AppTheme.glassInk,
-                      letterSpacing: -1.0,
-                    ),
-                  ).animate().fadeIn(delay: 100.ms).moveY(begin: 12, end: 0),
-                  const SizedBox(height: 10),
-                  Text(
-                    'Tap each card to grant access. Skip any you don’t need — the agent will simply turn off the matching tools.',
-                    style: AppTextStyles.body.copyWith(
-                      color: AppTheme.glassInk2.withValues(alpha: 0.8),
-                      fontSize: 14,
-                    ),
-                  ).animate().fadeIn(delay: 200.ms),
-                  const SizedBox(height: 28),
-                  for (var i = 0; i < _perms.length; i++)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 12),
-                      child: _permCard(_perms[i])
-                          .animate()
-                          .fadeIn(delay: (300 + i * 80).ms)
-                          .moveY(begin: 14, end: 0),
-                    ),
-                  const SizedBox(height: 20),
-                  GradientButton(
-                    onPressed: _continue,
-                    label: _grantedCount == _perms.length
-                        ? 'CONTINUE'
-                        : 'CONTINUE ANYWAY',
-                  )
-                      .animate()
-                      .fadeIn(delay: (300 + _perms.length * 80 + 100).ms)
-                      .moveY(begin: 20, end: 0),
-                  const SizedBox(height: 12),
-                  Center(
-                    child: Text(
-                      'You can change these later in system settings.',
-                      style: AppTextStyles.small.copyWith(
-                        color: AppTheme.glassMuted,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                ],
+      backgroundColor: AppTheme.bg,
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(24, 20, 24, 24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Eyebrow('STEP 01 / 02'),
+              const SizedBox(height: 14),
+              Text(
+                'A few permissions.',
+                style: GoogleFonts.interTight(
+                  fontSize: 28,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: -0.8,
+                  color: AppTheme.ink,
+                ),
               ),
-            ),
+              const SizedBox(height: 6),
+              Text(
+                'Local Agent needs these to act on your phone. Everything happens on-device.',
+                style: GoogleFonts.interTight(
+                  fontSize: 14,
+                  height: 1.55,
+                  color: AppTheme.ink2,
+                ),
+              ),
+              const SizedBox(height: 22),
+              Expanded(
+                child: ListView.separated(
+                  physics: const BouncingScrollPhysics(),
+                  itemCount: _perms.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 10),
+                  itemBuilder: (_, i) => _permRow(_perms[i]),
+                ),
+              ),
+              const SizedBox(height: 18),
+              PrimaryButton(
+                onPressed: _busy ? null : _grantAll,
+                label: 'Grant All & Continue',
+                isLoading: _busy,
+              ),
+              const SizedBox(height: 10),
+              SecondaryButton(
+                onPressed: _busy ? null : _continue,
+                label: 'Decide Later',
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
 
-  Widget _permCard(_PermItem p) {
-    final granted = p.status == PermStatus.granted;
-    final denied = p.status == PermStatus.denied;
-    final loading = _busyKey(p.key);
-
-    return GlassCard(
-      padding: const EdgeInsets.fromLTRB(18, 16, 14, 16),
-      borderRadius: BorderRadius.circular(20),
-      blur: 25,
-      opacity: granted ? 0.07 : 0.04,
-      border: Border.all(
-        color: granted
-            ? AppTheme.accentSuccess.withValues(alpha: 0.5)
-            : (denied
-                ? AppTheme.accentError.withValues(alpha: 0.35)
-                : AppTheme.glassBorder),
-        width: granted ? 1.4 : 0.9,
+  Widget _permRow(_PermItem p) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+      decoration: BoxDecoration(
+        color: AppTheme.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppTheme.border),
       ),
       child: Row(
-        crossAxisAlignment: CrossAxisAlignment.center,
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            width: 44,
-            height: 44,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: granted
-                  ? AppTheme.accentSuccess.withValues(alpha: 0.12)
-                  : AppTheme.glassSurface2,
-              border: Border.all(
-                color: granted
-                    ? AppTheme.accentSuccess.withValues(alpha: 0.4)
-                    : AppTheme.glassBorder,
-                width: 1,
-              ),
-            ),
-            child: Icon(
-              p.icon,
-              color: granted ? AppTheme.accentSuccess : AppTheme.glassInk2,
-              size: 20,
-            ),
-          ),
+          Icon(p.icon, color: AppTheme.ink, size: 22),
           const SizedBox(width: 14),
           Expanded(
             child: Column(
@@ -250,83 +207,34 @@ class _PermissionsScreenState extends State<PermissionsScreen> {
               children: [
                 Text(
                   p.title,
-                  style: AppTextStyles.bodyStrong.copyWith(
-                    color: AppTheme.glassInk,
-                    fontSize: 15,
+                  style: GoogleFonts.interTight(
+                    fontSize: 14,
+                    color: AppTheme.ink,
+                    fontWeight: FontWeight.w500,
                   ),
                 ),
                 const SizedBox(height: 3),
                 Text(
                   p.subtitle,
-                  style: AppTextStyles.small.copyWith(
-                    color: AppTheme.glassInk2.withValues(alpha: 0.7),
+                  style: GoogleFonts.interTight(
                     fontSize: 12,
-                    height: 1.35,
+                    color: AppTheme.ink2,
+                    height: 1.4,
                   ),
                 ),
               ],
             ),
           ),
           const SizedBox(width: 10),
-          _trailing(p, granted, denied, loading),
+          Pill(
+            p.state == _PermState.granted
+                ? 'GRANTED'
+                : (p.state == _PermState.optional ? 'OPTIONAL' : 'ASK'),
+            style: p.state == _PermState.granted
+                ? PillStyle.success
+                : PillStyle.surface,
+          ),
         ],
-      ),
-    );
-  }
-
-  Widget _trailing(_PermItem p, bool granted, bool denied, bool loading) {
-    if (granted) {
-      return const Padding(
-        padding: EdgeInsets.symmetric(horizontal: 6),
-        child: Icon(
-          Icons.check_circle_rounded,
-          color: AppTheme.accentSuccess,
-          size: 26,
-        ),
-      );
-    }
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(12),
-        onTap: loading ? null : () => _requestOne(p),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(12),
-            color: denied
-                ? AppTheme.accentError.withValues(alpha: 0.12)
-                : AppTheme.glassAccent.withValues(alpha: 0.16),
-            border: Border.all(
-              color: denied
-                  ? AppTheme.accentError.withValues(alpha: 0.4)
-                  : AppTheme.glassAccent.withValues(alpha: 0.5),
-              width: 1,
-            ),
-          ),
-          child: SizedBox(
-            width: 56,
-            child: loading
-                ? const Center(
-                    child: SizedBox(
-                      width: 14,
-                      height: 14,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 1.6,
-                        color: AppTheme.glassAccent,
-                      ),
-                    ),
-                  )
-                : Text(
-                    denied ? 'Retry' : 'Allow',
-                    textAlign: TextAlign.center,
-                    style: AppTextStyles.bodyStrong.copyWith(
-                      color: denied ? AppTheme.accentError : AppTheme.glassAccent,
-                      fontSize: 13,
-                    ),
-                  ),
-          ),
-        ),
       ),
     );
   }

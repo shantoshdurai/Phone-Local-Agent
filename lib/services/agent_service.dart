@@ -342,47 +342,82 @@ class AgentService {
     } catch (_) {}
     _statusController.add('Thinking...');
 
+    String promptText = text;
+    if (_activeSpec.supportsTools && _activeSpec.modelType == ModelType.phi) {
+      promptText += '\n\n[System note: You have tools available. If a tool can fulfill this request, you MUST generate a tool call. Do not just reply with text if a tool is needed.]';
+    }
+
     Message userMessage;
     if (imagePath != null && imagePath.isNotEmpty) {
       try {
         final Uint8List bytes = await File(imagePath).readAsBytes();
         userMessage = Message.withImage(
-          text: text,
+          text: promptText,
           imageBytes: bytes,
           isUser: true,
         );
       } catch (_) {
-        userMessage = Message.text(text: text, isUser: true);
+        userMessage = Message.text(text: promptText, isUser: true);
       }
     } else {
-      userMessage = Message.text(text: text, isUser: true);
+      userMessage = Message.text(text: promptText, isUser: true);
     }
 
-    try {
-      await _chat!.addQuery(userMessage);
-    } catch (e) {
-      await _rebuildChat(const []);
-      _chatIsPristine = false;
-      await _chat!.addQuery(userMessage);
+    int retryCount = 0;
+    while (true) {
+      try {
+        await _chat!.addQuery(userMessage);
+        break;
+      } catch (e) {
+        final errorStr = e.toString();
+        if (errorStr.contains('Previous invocation') || errorStr.contains('IllegalStateException')) {
+          retryCount++;
+          if (retryCount <= 10) {
+            // Native engine is still wrapping up from a stopGeneration or previous run.
+            // Wait 200ms and try again, up to 2 seconds total.
+            await Future.delayed(const Duration(milliseconds: 200));
+            continue;
+          }
+        }
+        // If we exhausted retries or hit a different error, rebuild chat as a last resort.
+        await _rebuildChat(const []);
+        _chatIsPristine = false;
+        await _chat!.addQuery(userMessage);
+        break;
+      }
     }
 
     _stopRequested = false;
     AgentResponse result;
-    try {
-      result = await _streamResponseAndHandleTools(sessionId);
-    } catch (e) {
-      final isSessionError = e
-              .toString()
-              .toLowerCase()
-              .contains('session') ||
-          e.toString().contains('Previous invocation') ||
-          e.toString().contains('IllegalStateException') ||
-          e.toString().contains('PlatformException');
-      if (!isSessionError) rethrow;
-      await _rebuildChat(const []);
-      _chatIsPristine = false;
-      await _chat!.addQuery(userMessage);
-      result = await _streamResponseAndHandleTools(sessionId);
+    retryCount = 0;
+    while (true) {
+      try {
+        result = await _streamResponseAndHandleTools(sessionId);
+        break;
+      } catch (e) {
+        final errorStr = e.toString();
+        final isSessionError = errorStr.toLowerCase().contains('session') ||
+            errorStr.contains('Previous invocation') ||
+            errorStr.contains('IllegalStateException') ||
+            errorStr.contains('PlatformException');
+            
+        if (!isSessionError) rethrow;
+
+        if (errorStr.contains('Previous invocation') || errorStr.contains('IllegalStateException')) {
+          retryCount++;
+          if (retryCount <= 10) {
+            await Future.delayed(const Duration(milliseconds: 200));
+            continue;
+          }
+        }
+        
+        await _rebuildChat(const []);
+        _chatIsPristine = false;
+        await _chat!.addQuery(userMessage);
+        // If it fails after rebuild, let it throw naturally
+        result = await _streamResponseAndHandleTools(sessionId);
+        break;
+      }
     }
 
     try {
@@ -585,6 +620,22 @@ class AgentService {
       toolName: toolName,
       response: toolResult,
     ));
+
+    if (toolName == 'get_recent_screenshots') {
+      final screenshots = toolResult['screenshots'] as List?;
+      if (screenshots != null && screenshots.isNotEmpty) {
+        final latestPath = screenshots.first['path'] as String;
+        final direct = "Here is your most recent screenshot.";
+        await _dbService.saveMessage('assistant', direct, sessionId);
+        return AgentResponse(direct, _modelName, 0,
+            tps: priorTps, evalTime: priorEvalTime, toolName: toolName, imagePath: latestPath);
+      } else {
+        final direct = "I couldn't find any recent screenshots on your device. Make sure you've granted storage permissions.";
+        await _dbService.saveMessage('assistant', direct, sessionId);
+        return AgentResponse(direct, _modelName, 0,
+            tps: priorTps, evalTime: priorEvalTime, toolName: toolName);
+      }
+    }
 
     // For simple actions (flashlight, vibrate, etc.) we have a clean templated
     // reply — return it immediately and skip a second model call. The chat

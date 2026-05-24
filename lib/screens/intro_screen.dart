@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_animate/flutter_animate.dart';
+import 'package:google_fonts/google_fonts.dart';
 import '../theme/app_theme.dart';
-import '../widgets/glass_widgets.dart';
+import '../widgets/design_components.dart';
 import 'permissions_screen.dart';
 
-/// Minimalist welcome screen replacing the glowing aurora theme.
+/// 01 · Intro — first run welcome.
 class IntroScreen extends StatelessWidget {
   const IntroScreen({super.key});
 
@@ -22,66 +22,75 @@ class IntroScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: AppTheme.glassBg,
+      backgroundColor: AppTheme.bg,
       body: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.symmetric(
-            horizontal: 32.0,
-            vertical: 24.0,
-          ),
+          padding: const EdgeInsets.fromLTRB(28, 28, 28, 28),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const SizedBox(height: 60),
-              Container(
-                width: 48,
-                height: 48,
-                decoration: BoxDecoration(
-                  color: AppTheme.glassSurface,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: AppTheme.glassBorder),
+              const SizedBox(height: 32),
+              const BrandMark.large(),
+              const SizedBox(height: 28),
+              const Eyebrow('LOCAL AGENT · v0.4'),
+              const SizedBox(height: 18),
+              Text(
+                "Hello.\nI'm your\nlocal AI agent.",
+                style: GoogleFonts.interTight(
+                  fontSize: 42,
+                  fontWeight: FontWeight.w600,
+                  height: 1.05,
+                  letterSpacing: -1.4,
+                  color: AppTheme.ink,
                 ),
-                child: const Center(
-                  child: Icon(
-                    Icons.auto_awesome_rounded,
-                    size: 24,
-                    color: AppTheme.glassInk,
+              ),
+              const SizedBox(height: 18),
+              SizedBox(
+                width: 320,
+                child: Text(
+                  'A private intelligence that lives entirely on your device. '
+                  'No cloud processing. No telemetry.',
+                  style: GoogleFonts.interTight(
+                    fontSize: 14,
+                    height: 1.55,
+                    color: AppTheme.ink2,
                   ),
                 ),
-              ).animate().fadeIn(duration: 600.ms).moveY(begin: 10, end: 0),
-              const SizedBox(height: 32),
-              Text(
-                'Hello. I\'m your\nlocal AI agent.',
-                style: AppTextStyles.heading.copyWith(
-                  fontSize: 42,
-                  color: AppTheme.glassInk,
-                  height: 1.1,
-                  letterSpacing: -1.2,
-                ),
-              )
-                  .animate()
-                  .fadeIn(delay: 200.ms)
-                  .moveY(begin: 10, end: 0),
-              const SizedBox(height: 24),
-              Text(
-                'A private intelligence that lives entirely on your device.\nNo cloud processing. No telemetry.',
-                style: AppTextStyles.body.copyWith(
-                  color: AppTheme.glassInk2,
-                  fontSize: 16,
-                ),
-              )
-                  .animate()
-                  .fadeIn(delay: 400.ms)
-                  .moveY(begin: 10, end: 0),
+              ),
               const Spacer(),
-              GradientButton(
+              PrimaryButton(
                 onPressed: () => _start(context),
-                label: 'CONTINUE',
-              )
-                  .animate()
-                  .fadeIn(delay: 600.ms)
-                  .moveY(begin: 20, end: 0),
-              const SizedBox(height: 24),
+                label: 'Continue',
+              ),
+              const SizedBox(height: 22),
+              Row(
+                children: [
+                  Container(
+                    width: 6,
+                    height: 6,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: AppTheme.success,
+                      boxShadow: [
+                        BoxShadow(
+                          color: AppTheme.success.withValues(alpha: 0.12),
+                          blurRadius: 0,
+                          spreadRadius: 4,
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    'RUNS 100% OFFLINE ON THIS DEVICE',
+                    style: GoogleFonts.jetBrainsMono(
+                      fontSize: 10,
+                      letterSpacing: 1.4,
+                      color: AppTheme.muted,
+                    ),
+                  ),
+                ],
+              ),
             ],
           ),
         ),

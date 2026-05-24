@@ -2,15 +2,17 @@ import 'dart:io';
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
-import '../theme/app_theme.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:speech_to_text/speech_to_text.dart';
+import '../models/chat_message.dart';
 import '../services/agent_service.dart';
 import '../services/database_service.dart';
 import '../services/model_downloader_service.dart';
 import '../services/model_registry.dart';
-import '../models/chat_message.dart';
+import '../theme/app_theme.dart';
+import '../widgets/design_components.dart';
 import '../widgets/message_bubble.dart';
 import '../widgets/suggestions_list.dart';
 import 'home_screen.dart';
@@ -18,7 +20,7 @@ import 'settings_screen.dart';
 import 'splash_screen.dart';
 import 'voice_mode_screen.dart';
 
-
+/// 05/06/07 · Chat — empty state, streaming, sessions drawer.
 class ChatScreen extends StatefulWidget {
   final String modelFileName;
   const ChatScreen({super.key, required this.modelFileName});
@@ -34,62 +36,48 @@ class _ChatScreenState extends State<ChatScreen> {
   final AgentService _agentService = AgentService();
   final DatabaseService _dbService = DatabaseService();
   final SpeechToText _speechToText = SpeechToText();
+  final ImagePicker _picker = ImagePicker();
+  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+
   bool _isTyping = false;
   bool _isInitializing = true;
   int? _currentSessionId;
   List<Map<String, dynamic>> _sessions = [];
   String? _selectedImagePath;
-  final ImagePicker _picker = ImagePicker();
-  // Streaming text lives in a ValueNotifier so per-token updates rebuild only
-  // the streaming bubble, not the entire ListView. Same for the thinking
-  // indicator's rotating label — both were causing visible jank.
   final ValueNotifier<String> _streamingText = ValueNotifier<String>('');
   final ValueNotifier<bool> _isStreaming = ValueNotifier<bool>(false);
   final ValueNotifier<int> _thinkingIndex = ValueNotifier<int>(0);
-  // Tracks "the model has been working on this turn for N seconds." Wired
-  // up next to the rotating thinking label so silent stalls (cold kernel,
-  // long prefill) are visible instead of looking frozen.
   final ValueNotifier<int> _typingSeconds = ValueNotifier<int>(0);
   StreamSubscription? _tokenSub;
   Timer? _thinkingTimer;
   Timer? _typingTimer;
-  // Token streams arrive faster than the UI needs to animate-scroll.
-  // We coalesce scroll requests into one per frame to keep the list smooth
-  // on entry-tier GPUs.
   bool _scrollPending = false;
   late _KeyboardObserver _keyboardObserver;
+
   final List<String> _thinkingMessages = [
-    'Thinking...',
-    'Cooking up a response...',
-    'Analyzing context...',
-    'Manifesting answers...',
-    'Gathering local data...',
-    'Optimizing inference...',
-    'Consulting the neural engine...',
-    'Getting ready...',
+    'Thinking',
+    'Cooking up a response',
+    'Analyzing context',
+    'Manifesting answers',
+    'Gathering local data',
+    'Optimizing inference',
+    'Consulting the neural engine',
+    'Getting ready',
   ];
 
   final List<Map<String, dynamic>> _allSuggestions = [
     {'text': 'Download the latest WhatsApp APK', 'icon': Icons.download_rounded},
     {'text': 'Tell me my device info & battery', 'icon': Icons.battery_charging_full_rounded},
-    {'text': 'Search for my PDF documents', 'icon': Icons.description_rounded},
+    {'text': 'Search for my PDF documents', 'icon': Icons.description_outlined},
     {'text': 'Toggle my device flashlight', 'icon': Icons.flashlight_on_rounded},
     {'text': 'Show me my recent screenshots', 'icon': Icons.image_search_rounded},
     {'text': 'Vibrate my phone for 1 second', 'icon': Icons.vibration_rounded},
-    {'text': 'Copy current time to clipboard', 'icon': Icons.content_copy_rounded},
     {'text': 'Check my network connectivity', 'icon': Icons.network_check_rounded},
     {'text': 'List all installed applications', 'icon': Icons.apps_rounded},
-    {'text': 'Read the last text I copied', 'icon': Icons.assignment_rounded},
     {'text': 'Set volume level to 50%', 'icon': Icons.volume_up_rounded},
-    {'text': 'Find all APK files on my device', 'icon': Icons.folder_zip_rounded},
-    {'text': 'Open Play Store for Instagram', 'icon': Icons.shop_rounded},
-    {'text': 'Check my available storage space', 'icon': Icons.storage_rounded},
-    {'text': 'What was the last file I modified?', 'icon': Icons.history_edu_rounded},
-    {'text': 'Launch the Calculator app', 'icon': Icons.calculate_rounded},
-    {'text': 'Show my device public IP address', 'icon': Icons.public_rounded},
+    {'text': 'Find all APK files on my device', 'icon': Icons.folder_zip_outlined},
   ];
   List<Map<String, dynamic>> _currentSuggestions = [];
-  // Models the user has on disk right now — drives the agent picker.
   final Map<String, bool> _installedModels = {};
   ModelSpec get _currentSpec => ModelRegistry.byFileName(widget.modelFileName);
   bool get _isCloud => widget.modelFileName == kCloudModelSentinel;
@@ -100,29 +88,20 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void initState() {
     super.initState();
-    // Defer all heavy init past the first frame so the loading screen paints
-    // before native FlutterGemma / MediaPipe init starts hogging the platform
-    // thread. Speech is lazy — only initialised the first time the mic is
-    // tapped, since it spins up a separate Android service.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       _initAgent();
       _checkModels();
     });
     _agentService.statusStream.listen((_) {});
-
     _tokenSub = _agentService.tokenStream.listen((token) {
       if (!mounted) return;
       if (token == '\x00') {
         _streamingText.value = '';
         _isStreaming.value = true;
       } else if (token == '\x01') {
-        // Clean end-of-response: leave text in place so the final ChatMessage
-        // slots in without a one-frame gap.
         _isStreaming.value = false;
       } else if (token == '\x02') {
-        // Stream cancelled (tool call interrupted) — clear immediately so the
-        // partial JSON-ish output doesn't linger while the tool runs.
         _isStreaming.value = false;
         _streamingText.value = '';
       } else {
@@ -130,16 +109,11 @@ class _ChatScreenState extends State<ChatScreen> {
         _requestStreamScroll();
       }
     });
-
     _keyboardObserver = _KeyboardObserver(onKeyboardVisible: _scrollToBottom);
     WidgetsBinding.instance.addObserver(_keyboardObserver);
   }
 
   bool _speechReady = false;
-
-  /// Initialise the platform speech recogniser the first time it's needed.
-  /// Pulled out of initState because the native handshake stalled the UI
-  /// thread on cold launch.
   Future<bool> _ensureSpeechReady() async {
     if (_speechReady) return true;
     _speechReady = await _speechToText.initialize(
@@ -154,12 +128,7 @@ class _ChatScreenState extends State<ChatScreen> {
     if (!await _ensureSpeechReady()) return;
     await _speechToText.listen(
       onResult: (result) {
-        setState(() {
-          _textController.text = result.recognizedWords;
-          if (result.finalResult && _textController.text.isNotEmpty) {
-             // Optionally auto-submit: _handleSubmitted(_textController.text);
-          }
-        });
+        setState(() => _textController.text = result.recognizedWords);
       },
     );
     setState(() {});
@@ -174,7 +143,8 @@ class _ChatScreenState extends State<ChatScreen> {
     final downloader = ModelDownloaderService();
     final installed = <String, bool>{};
     for (final spec in ModelRegistry.all) {
-      installed[spec.fileName] = await downloader.isModelDownloaded(spec.fileName);
+      installed[spec.fileName] =
+          await downloader.isModelDownloaded(spec.fileName);
     }
     if (!mounted) return;
     setState(() {
@@ -230,30 +200,18 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _refreshSessions() async {
     final sessions = await _dbService.getSessions();
-    if (mounted) {
-      setState(() {
-        _sessions = sessions;
-      });
-    }
+    if (mounted) setState(() => _sessions = sessions);
   }
 
   Future<void> _initAgent() async {
     try {
       await _agentService.initialize(widget.modelFileName);
-      // Remember the model so next cold-start can boot straight into chat
-      // with this one instead of bouncing back to Home. Cloud sentinel is
-      // not a real file — main.dart re-resolves the cloud route from the
-      // mode + key prefs, so don't persist it here.
       if (!_isCloud) {
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('last_used_model_file', widget.modelFileName);
       }
       await _createNewChat(isInitial: true);
-      // _createNewChat calls _refreshSessions(), which updates _sessions.
-      // So we just need to disable the loading spinner now.
-      setState(() {
-        _isInitializing = false;
-      });
+      setState(() => _isInitializing = false);
     } catch (e) {
       setState(() {
         _messages.add(ChatMessage(text: "Failed to initialize agent: $e", isUser: false));
@@ -263,41 +221,35 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _createNewChat({bool isInitial = false}) async {
-    // Clean up any empty 'New Chat' sessions that were never used to prevent clutter
     final sessions = await _dbService.getSessions();
     for (var s in sessions) {
       if (s['title'] == 'New Chat') {
         await _dbService.deleteSession(s['id'] as int);
       }
     }
-
     final newId = await _dbService.createSession('New Chat');
     _currentSessionId = newId;
     await _agentService.loadSession(newId);
     await _refreshSessions();
-
     setState(() {
       _messages.clear();
-      const greeting = "Hello! I'm your local AI agent. I have loaded my tools. How can I help you today?";
+      const greeting =
+          "Hello! I'm your local AI agent. I have loaded my tools. How can I help you today?";
       _messages.add(ChatMessage(text: greeting, isUser: false));
-
       final shuffled = List<Map<String, dynamic>>.from(_allSuggestions)..shuffle();
-      _currentSuggestions = shuffled.take(3).toList();
-
-      if (!isInitial) {
-        _isInitializing = false;
-      }
+      _currentSuggestions = shuffled.take(4).toList();
+      if (!isInitial) _isInitializing = false;
     });
-
-    // Save greeting to history if it's a new session
-    await _dbService.saveMessage('assistant', "Hello! I'm your local AI agent. I have loaded my tools. How can I help you today?", newId);
+    await _dbService.saveMessage(
+        'assistant',
+        "Hello! I'm your local AI agent. I have loaded my tools. How can I help you today?",
+        newId);
   }
 
   Future<void> _switchSession(int sessionId) async {
     _currentSessionId = sessionId;
     await _agentService.loadSession(sessionId);
     final history = await _dbService.getChatHistory(sessionId);
-
     setState(() {
       _messages.clear();
       for (var msg in history) {
@@ -316,45 +268,40 @@ class _ChatScreenState extends State<ChatScreen> {
       _promptVisionSwitch();
       return;
     }
-    final XFile? image = await _picker.pickImage(source: ImageSource.gallery);
+    final image = await _picker.pickImage(source: ImageSource.gallery);
     if (image != null) {
-      setState(() {
-        _selectedImagePath = image.path;
-      });
+      setState(() => _selectedImagePath = image.path);
       _scrollToBottom();
     }
   }
 
-  /// Asked when the user taps the attach button on a text-only model.
-  /// Routes them to the vision-capable spec (downloading if needed).
   void _promptVisionSwitch() {
     final visionSpec = ModelRegistry.all.firstWhere(
       (s) => s.supportsVision,
       orElse: () => _currentSpec,
     );
     if (visionSpec.id == _currentSpec.id) return;
-
     final isInstalled = _installedModels[visionSpec.fileName] ?? false;
     showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1A1A1A),
+        backgroundColor: AppTheme.surface,
         title: Text(
           'Images need ${visionSpec.displayName}',
-          style: AppTextStyles.title.copyWith(
-              color: Colors.white, fontSize: 18, fontWeight: FontWeight.w600),
+          style: GoogleFonts.interTight(
+              color: AppTheme.ink, fontSize: 18, fontWeight: FontWeight.w600),
         ),
         content: Text(
           isInstalled
               ? '${_currentSpec.displayName} is text-only. Switch to ${visionSpec.displayName} to attach images?'
               : '${_currentSpec.displayName} is text-only. ${visionSpec.displayName} (${visionSpec.sizeLabel}) supports vision — download it now?',
-          style: AppTextStyles.body.copyWith(color: Colors.white70),
+          style: GoogleFonts.interTight(color: AppTheme.ink2),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
             child: Text('Not now',
-                style: AppTextStyles.bodyStrong.copyWith(color: Colors.white54)),
+                style: GoogleFonts.interTight(color: AppTheme.muted)),
           ),
           TextButton(
             onPressed: () {
@@ -376,9 +323,7 @@ class _ChatScreenState extends State<ChatScreen> {
             },
             child: Text(
               isInstalled ? 'Switch' : 'Download',
-              style: AppTextStyles.bodyStrong.copyWith(
-                color: AppTheme.glassAccent,
-              ),
+              style: GoogleFonts.interTight(color: AppTheme.ink, fontWeight: FontWeight.w600),
             ),
           ),
         ],
@@ -389,54 +334,47 @@ class _ChatScreenState extends State<ChatScreen> {
   void _handleSubmitted(String text) async {
     final imagePath = _selectedImagePath;
     _textController.clear();
-    setState(() {
-      _selectedImagePath = null;
-    });
-
+    setState(() => _selectedImagePath = null);
     if (text.trim().isEmpty && imagePath == null) return;
 
+    if (_isTyping) {
+      await _agentService.stopGeneration();
+      while (_isTyping && mounted) {
+        await Future.delayed(const Duration(milliseconds: 50));
+      }
+      if (!mounted) return;
+    }
     setState(() {
       _messages.add(ChatMessage(text: text, isUser: true, imagePath: imagePath));
       _isTyping = true;
     });
     _startThinkingAnimation();
-
-    // Save user message to database
     await _dbService.saveMessage('user', text, _currentSessionId!);
-
     _scrollToBottom();
 
     try {
       final session = _sessions.cast<Map<String, dynamic>?>().firstWhere(
-        (s) => s?['id'] == _currentSessionId,
-        orElse: () => null,
-      );
+            (s) => s?['id'] == _currentSessionId,
+            orElse: () => null,
+          );
       if (session != null && session['title'] == 'New Chat') {
-        // Create a smarter title summary instead of just raw substring
         String titleText = text.isEmpty ? "Image Query" : text.trim();
-        // Remove common prompt prefixes
         final prefixes = ['can you ', 'how do i ', 'what is ', 'write a ', 'create a ', 'help me ', 'please ', 'tell me '];
         for (final p in prefixes) {
           if (titleText.toLowerCase().startsWith(p)) {
             titleText = titleText.substring(p.length);
           }
         }
-        // Capitalize first letter
         if (titleText.isNotEmpty) {
           titleText = titleText[0].toUpperCase() + titleText.substring(1);
         }
-        // Take first 3-4 words for a cleaner summary
         final words = titleText.split(RegExp(r'\s+'));
         final newTitle = words.take(4).join(' ') + (words.length > 4 ? '...' : '');
         await _dbService.updateSessionTitle(_currentSessionId!, newTitle);
         await _refreshSessions();
       }
-
       final response = await _agentService.sendMessage(text, _currentSessionId!, imagePath: imagePath);
       if (mounted) {
-        // The text bubble that just streamed should slot into the same spot
-        // without replaying its entrance animation — that swap is what looked
-        // like a "full animation glitch at the end".
         final hadStreamed = _streamingText.value.isNotEmpty;
         setState(() {
           _isTyping = false;
@@ -448,6 +386,7 @@ class _ChatScreenState extends State<ChatScreen> {
             tps: response.tps,
             evalTime: response.evalTime,
             toolName: response.toolName,
+            imagePath: response.imagePath,
             skipEntrance: hadStreamed,
           ));
         });
@@ -455,9 +394,6 @@ class _ChatScreenState extends State<ChatScreen> {
         _scrollToBottom();
       }
     } catch (e, st) {
-      // Surface the raw error in the debug console so we can actually
-      // diagnose "Something went wrong" reports — the user only sees the
-      // humanized copy, but the log line lets us trace SDK / platform faults.
       debugPrint('ChatScreen.sendMessage failed: $e');
       debugPrintStack(stackTrace: st);
       if (mounted) {
@@ -470,32 +406,18 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  /// Map raw platform/SDK errors to short, user-readable copy. Anything we
-  /// don't recognise falls back to a generic retry hint — never a stack trace.
   String _humanizeError(Object err) {
     final s = err.toString();
-    if (s.contains('Previous invocation')) {
-      return "I was still finishing the last reply. Try sending that again.";
-    }
-    if (s.contains('Model not initialized')) {
-      return "The model isn't loaded yet. Give it a moment and try again.";
-    }
-    if (s.contains('Model file not found')) {
-      return "I couldn't find the model on disk — please re-download it from the home screen.";
-    }
-    if (s.contains('SocketException') || s.contains('Failed host lookup')) {
-      return "Looks like the network is down — that tool needs an internet connection.";
-    }
-    if (s.contains('PlatformException') || s.contains('IllegalStateException')) {
-      return "Something went wrong with the on-device inference. Try sending that again.";
-    }
+    if (s.contains('Previous invocation')) return "I was still finishing the last reply. Try sending that again.";
+    if (s.contains('Model not initialized')) return "The model isn't loaded yet. Give it a moment and try again.";
+    if (s.contains('Model file not found')) return "I couldn't find the model on disk — please re-download it from the home screen.";
+    if (s.contains('SocketException') || s.contains('Failed host lookup')) return "Looks like the network is down — that tool needs an internet connection.";
+    if (s.contains('PlatformException') || s.contains('IllegalStateException')) return "Something went wrong with the on-device inference. Try sending that again.";
     return "Something went wrong. Try again.";
   }
 
   Future<void> _openVoiceMode() async {
     if (_currentSessionId == null) return;
-    // Voice mode shares the current chat session, so when the user closes it
-    // their voice turns appear in the regular chat list when they return.
     await Navigator.push(
       context,
       MaterialPageRoute(
@@ -503,9 +425,6 @@ class _ChatScreenState extends State<ChatScreen> {
         fullscreenDialog: true,
       ),
     );
-    // After voice mode, refresh the chat by reloading the session — the
-    // agent's chat history already has the new turns; we just need the UI to
-    // show them.
     if (!mounted || _currentSessionId == null) return;
     final history = await _dbService.getChatHistory(_currentSessionId!);
     setState(() {
@@ -532,9 +451,6 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
-  /// Called per streamed token. Coalesces N requests per frame into one cheap
-  /// jumpTo so we don't queue dozens of overlapping animateTo() calls — which
-  /// is what was driving the per-token UI stutter on entry-tier devices.
   void _requestStreamScroll() {
     if (_scrollPending) return;
     _scrollPending = true;
@@ -546,129 +462,52 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
+  bool get _showEmptyState =>
+      _messages.length == 1 && !_messages.first.isUser && !_isTyping;
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.black,
-      appBar: AppBar(
-        leading: Builder(
-          builder: (context) => IconButton(
-            icon: const Icon(Icons.menu_rounded, color: Colors.white70, size: 24),
-            onPressed: () => Scaffold.of(context).openDrawer(),
-          ),
+      key: _scaffoldKey,
+      backgroundColor: AppTheme.bg,
+      drawer: _buildDrawer(),
+      body: SafeArea(
+        child: Column(
+          children: [
+            _buildHeader(),
+            Expanded(
+              child: _isInitializing
+                  ? const _ChatBootstrapping()
+                  : _showEmptyState
+                      ? _buildEmptyState()
+                      : _buildMessageList(),
+            ),
+            if (!_isInitializing) _buildComposer(),
+          ],
         ),
-        title: _isCloud
-            ? Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    _headerName,
-                    style: AppTextStyles.title.copyWith(
-                      color: Colors.white,
-                      fontSize: 19,
-                      fontWeight: FontWeight.w600,
-                      letterSpacing: -0.3,
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 6, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: AppTheme.glassMagenta.withValues(alpha: 0.18),
-                      borderRadius: BorderRadius.circular(6),
-                      border: Border.all(
-                        color: AppTheme.glassMagenta.withValues(alpha: 0.45),
-                      ),
-                    ),
-                    child: Text(
-                      'CLOUD',
-                      style: AppTextStyles.mono.copyWith(
-                        color: AppTheme.glassMagenta,
-                        fontSize: 9,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 1.0,
-                      ),
-                    ),
-                  ),
-                ],
-              )
-            : PopupMenuButton<String>(
-          color: const Color(0xFF1E1E1E),
-          offset: const Offset(0, 40),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                _headerName,
-                style: AppTextStyles.title.copyWith(color: Colors.white, fontSize: 19, fontWeight: FontWeight.w600, letterSpacing: -0.3),
-              ),
-              const SizedBox(width: 4),
-              const Icon(Icons.keyboard_arrow_down_rounded, color: Colors.white54, size: 20),
-            ],
+      ),
+    );
+  }
+
+  Widget _buildHeader() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+      decoration: const BoxDecoration(
+        border: Border(bottom: BorderSide(color: AppTheme.border)),
+      ),
+      child: Row(
+        children: [
+          HeaderIconButton(
+            icon: Icons.menu_rounded,
+            size: 22,
+            onPressed: () => _scaffoldKey.currentState?.openDrawer(),
           ),
-          onSelected: (value) {
-            if (value == '__manage__') {
-              Navigator.push(context,
-                  MaterialPageRoute(builder: (_) => const HomeScreen()));
-              return;
-            }
-            if (value != widget.modelFileName) {
-              Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => SplashScreen(modelFileName: value)));
-            }
-          },
-          itemBuilder: (context) {
-            final items = <PopupMenuEntry<String>>[];
-            for (final spec in ModelRegistry.all) {
-              if (_installedModels[spec.fileName] != true) continue;
-              final isCurrent = spec.fileName == widget.modelFileName;
-              items.add(PopupMenuItem(
-                value: spec.fileName,
-                child: Row(
-                  children: [
-                    Icon(
-                      spec.supportsVision
-                          ? Icons.auto_awesome_rounded
-                          : Icons.bolt_rounded,
-                      color: isCurrent ? Colors.blueAccent : Colors.white60,
-                      size: 20,
-                    ),
-                    const SizedBox(width: 12),
-                    Text(
-                      spec.displayName,
-                      style: TextStyle(
-                        color: isCurrent ? Colors.blueAccent : Colors.white,
-                        fontWeight:
-                            isCurrent ? FontWeight.w600 : FontWeight.w500,
-                      ),
-                    ),
-                  ],
-                ),
-              ));
-            }
-            if (items.isNotEmpty) {
-              items.add(const PopupMenuDivider());
-            }
-            items.add(const PopupMenuItem(
-              value: '__manage__',
-              child: Row(
-                children: [
-                  Icon(Icons.download_rounded, color: Colors.white60, size: 20),
-                  SizedBox(width: 12),
-                  Text('Manage models', style: TextStyle(color: Colors.white)),
-                ],
-              ),
-            ));
-            return items;
-          },
-        ),
-        centerTitle: true,
-        elevation: 0,
-        backgroundColor: Colors.black,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.edit_square, size: 20, color: Colors.white70),
+          Expanded(
+            child: Center(child: _headerTitle()),
+          ),
+          HeaderIconButton(
+            icon: Icons.edit_outlined,
+            size: 18,
             onPressed: () async {
               try {
                 await _agentService.stopGeneration();
@@ -676,292 +515,554 @@ class _ChatScreenState extends State<ChatScreen> {
               _createNewChat();
             },
           ),
-          IconButton(
-            icon: const Icon(Icons.settings_outlined, size: 20, color: Colors.white70),
-            onPressed: () {
-              Navigator.push(context, MaterialPageRoute(builder: (context) => const SettingsScreen()));
-            },
+          HeaderIconButton(
+            icon: Icons.settings_outlined,
+            size: 18,
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const SettingsScreen()),
+            ),
           ),
-        ],
-      ),
-      drawer: _buildDrawer(),
-      body: Column(
-        children: [
-          Expanded(
-            child: _isInitializing
-                ? const _ChatBootstrapping()
-                : Column(
-                    children: [
-                      Expanded(
-                        child: ListView.builder(
-                          controller: _scrollController,
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                          itemCount: _messages.length + (_isTyping ? 1 : 0),
-                          itemBuilder: (context, index) {
-                            if (index == _messages.length && _isTyping) {
-                              return _TypingIndicator(
-                                streamingText: _streamingText,
-                                isStreaming: _isStreaming,
-                                thinkingIndex: _thinkingIndex,
-                                thinkingMessages: _thinkingMessages,
-                                typingSeconds: _typingSeconds,
-                              );
-                            }
-                            return MessageBubble(message: _messages[index]);
-                          },
-                        ),
-                      ),
-                      if (_messages.length <= 1 && !_isTyping)
-                        ValueListenableBuilder<TextEditingValue>(
-                          valueListenable: _textController,
-                          builder: (context, value, child) {
-                            final bool showSuggestions = value.text.isEmpty;
-                            return AnimatedOpacity(
-                              duration: const Duration(milliseconds: 250),
-                              opacity: showSuggestions ? 1.0 : 0.0,
-                              child: IgnorePointer(
-                                ignoring: !showSuggestions,
-                                child: SuggestionsList(
-                                  suggestions: _currentSuggestions,
-                                  onSuggestionTap: _handleSubmitted,
-                                ),
-                              ),
-                            );
-                          },
-                        ),
-                    ],
-                  ),
-          ),
-          if (!_isInitializing) _buildMessageComposer(),
         ],
       ),
     );
+  }
+
+  Widget _headerTitle() {
+    if (_isCloud) {
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            _headerName,
+            style: GoogleFonts.interTight(
+              fontSize: 18,
+              fontWeight: FontWeight.w600,
+              letterSpacing: -0.3,
+              color: AppTheme.ink,
+            ),
+          ),
+          const SizedBox(width: 8),
+          const Pill('CLOUD', style: PillStyle.outline),
+        ],
+      );
+    }
+    return PopupMenuButton<String>(
+      color: AppTheme.surface,
+      offset: const Offset(0, 40),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: const BorderSide(color: AppTheme.border),
+      ),
+      onSelected: (value) {
+        if (value == '__manage__') {
+          Navigator.push(context, MaterialPageRoute(builder: (_) => const HomeScreen()));
+          return;
+        }
+        if (value != widget.modelFileName) {
+          Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => SplashScreen(modelFileName: value)));
+        }
+      },
+      itemBuilder: (context) {
+        final items = <PopupMenuEntry<String>>[];
+        for (final spec in ModelRegistry.all) {
+          if (_installedModels[spec.fileName] != true) continue;
+          final isCurrent = spec.fileName == widget.modelFileName;
+          items.add(PopupMenuItem(
+            value: spec.fileName,
+            child: Row(
+              children: [
+                Icon(spec.supportsVision ? Icons.auto_awesome_rounded : Icons.bolt_rounded,
+                    color: isCurrent ? AppTheme.ink : AppTheme.ink2, size: 18),
+                const SizedBox(width: 12),
+                Text(spec.displayName,
+                    style: GoogleFonts.interTight(
+                        color: AppTheme.ink,
+                        fontWeight: isCurrent ? FontWeight.w600 : FontWeight.w500)),
+              ],
+            ),
+          ));
+        }
+        if (items.isNotEmpty) items.add(const PopupMenuDivider());
+        items.add(PopupMenuItem(
+          value: '__manage__',
+          child: Row(
+            children: [
+              const Icon(Icons.download_rounded, color: AppTheme.ink2, size: 18),
+              const SizedBox(width: 12),
+              Text('Manage models', style: GoogleFonts.interTight(color: AppTheme.ink)),
+            ],
+          ),
+        ));
+        return items;
+      },
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            _headerName,
+            style: GoogleFonts.interTight(
+              fontSize: 18,
+              fontWeight: FontWeight.w600,
+              letterSpacing: -0.3,
+              color: AppTheme.ink,
+            ),
+          ),
+          const SizedBox(width: 4),
+          const Icon(Icons.keyboard_arrow_down_rounded,
+              color: AppTheme.muted, size: 18),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEmptyState() {
+    return SingleChildScrollView(
+      physics: const BouncingScrollPhysics(),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Greeting
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 20, 16, 0),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Padding(
+                  padding: EdgeInsets.only(top: 2, right: 12),
+                  child: SparkleIcon(size: 22),
+                ),
+                Expanded(
+                  child: Text(
+                    "Hello! I'm your local AI agent. I have loaded my tools. How can I help you today?",
+                    style: GoogleFonts.interTight(
+                      fontSize: 15,
+                      height: 1.55,
+                      color: AppTheme.ink,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          SuggestionsList(
+            suggestions: _currentSuggestions,
+            onSuggestionTap: _handleSubmitted,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMessageList() {
+    return ListView.builder(
+      controller: _scrollController,
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+      itemCount: _messages.length + (_isTyping ? 1 : 0),
+      itemBuilder: (context, index) {
+        if (index == _messages.length && _isTyping) {
+          return _TypingIndicator(
+            streamingText: _streamingText,
+            isStreaming: _isStreaming,
+            thinkingIndex: _thinkingIndex,
+            thinkingMessages: _thinkingMessages,
+            typingSeconds: _typingSeconds,
+          );
+        }
+        return MessageBubble(message: _messages[index]);
+      },
+    );
+  }
+
+  Widget _buildComposer() {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 14),
+      decoration: const BoxDecoration(
+        border: Border(top: BorderSide(color: AppTheme.border)),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (_selectedImagePath != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 10, left: 4),
+              child: Row(
+                children: [
+                  Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(12),
+                        child: Image.file(
+                          File(_selectedImagePath!),
+                          width: 56,
+                          height: 56,
+                          fit: BoxFit.cover,
+                        ),
+                      ),
+                      Positioned(
+                        right: -6,
+                        top: -6,
+                        child: GestureDetector(
+                          onTap: () =>
+                              setState(() => _selectedImagePath = null),
+                          child: Container(
+                            width: 18,
+                            height: 18,
+                            decoration: const BoxDecoration(
+                                color: Colors.white, shape: BoxShape.circle),
+                            child: const Icon(Icons.close_rounded,
+                                color: Colors.black, size: 12),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          Row(
+            children: [
+              Expanded(
+                child: Container(
+                  height: 48,
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  decoration: BoxDecoration(
+                    color: AppTheme.composerBg,
+                    borderRadius: BorderRadius.circular(24),
+                  ),
+                  child: Row(
+                    children: [
+                      _circleIcon(Icons.add_rounded, 20, onTap: _pickImage),
+                      Expanded(
+                        child: TextField(
+                          controller: _textController,
+                          textCapitalization: TextCapitalization.sentences,
+                          onSubmitted: _handleSubmitted,
+                          onTap: () => Future.delayed(
+                              const Duration(milliseconds: 300), _scrollToBottom),
+                          style: GoogleFonts.interTight(
+                            color: AppTheme.ink,
+                            fontSize: 15,
+                          ),
+                          cursorColor: AppTheme.ink,
+                          decoration: InputDecoration(
+                            hintText: 'Ask Agent...',
+                            hintStyle: GoogleFonts.interTight(
+                              color: Colors.white.withValues(alpha: 0.4),
+                              fontSize: 15,
+                            ),
+                            border: InputBorder.none,
+                            enabledBorder: InputBorder.none,
+                            focusedBorder: InputBorder.none,
+                            disabledBorder: InputBorder.none,
+                            errorBorder: InputBorder.none,
+                            focusedErrorBorder: InputBorder.none,
+                            filled: false,
+                            isDense: true,
+                            contentPadding:
+                                const EdgeInsets.symmetric(vertical: 14),
+                          ),
+                        ),
+                      ),
+                      _circleIcon(
+                        _speechToText.isNotListening
+                            ? Icons.mic_none_rounded
+                            : Icons.mic_rounded,
+                        18,
+                        onTap: () => _speechToText.isNotListening
+                            ? _startListening()
+                            : _stopListening(),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              ValueListenableBuilder<TextEditingValue>(
+                valueListenable: _textController,
+                builder: (context, value, child) {
+                  final hasText = value.text.trim().isNotEmpty ||
+                      _selectedImagePath != null;
+                  return GestureDetector(
+                    onTap: () {
+                      if (_isTyping) {
+                        _agentService.stopGeneration();
+                      } else if (hasText) {
+                        _handleSubmitted(_textController.text);
+                      } else {
+                        _openVoiceMode();
+                      }
+                    },
+                    child: AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 220),
+                      transitionBuilder: (child, anim) =>
+                          ScaleTransition(scale: anim, child: child),
+                      child: Container(
+                        key: ValueKey<int>(
+                            _isTyping ? 0 : (hasText ? 1 : 2)),
+                        width: 44,
+                        height: 44,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: _isTyping
+                              ? AppTheme.error.withValues(alpha: 0.85)
+                              : AppTheme.ink,
+                        ),
+                        child: Icon(
+                          _isTyping
+                              ? Icons.stop_rounded
+                              : hasText
+                                  ? Icons.arrow_upward_rounded
+                                  : Icons.mic_rounded,
+                          color: _isTyping ? Colors.white : AppTheme.bg,
+                          size: _isTyping ? 18 : 20,
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _circleIcon(IconData icon, double size, {required VoidCallback onTap}) {
+    return SizedBox(
+      width: 32,
+      height: 32,
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(16),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(16),
+          onTap: onTap,
+          child: Icon(icon, size: size, color: AppTheme.ink),
+        ),
+      ),
+    );
+  }
+
+  String _relativeWhen(DateTime t) {
+    final now = DateTime.now();
+    final diff = now.difference(t);
+    if (diff.inMinutes < 1) return 'now';
+    if (diff.inHours < 1) return '${diff.inMinutes}m ago';
+    if (diff.inDays < 1) return '${diff.inHours}h ago';
+    if (diff.inDays < 2) return 'yesterday';
+    if (diff.inDays < 7) {
+      const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+      return days[t.weekday - 1];
+    }
+    return '${t.day} ${_monthShort(t.month)}';
+  }
+
+  String _monthShort(int m) {
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+        'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    return months[m - 1];
   }
 
   Widget _buildDrawer() {
     return Drawer(
-      backgroundColor: Colors.black,
-      child: Column(
-        children: [
-          const SizedBox(height: 60),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16.0),
-            child: Row(
-              children: [
-                const Icon(Icons.auto_awesome_rounded, color: Colors.white, size: 24),
-                const SizedBox(width: 12),
-                Text('Local Agent', style: AppTextStyles.title.copyWith(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w600)),
-              ],
+      backgroundColor: AppTheme.bg,
+      width: MediaQuery.of(context).size.width * 0.86,
+      shape: const Border(
+          right: BorderSide(color: AppTheme.border)),
+      child: SafeArea(
+        child: Column(
+          children: [
+            const SizedBox(height: 8),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 8, 20, 22),
+              child: Row(
+                children: [
+                  const BrandMark(size: 36, iconSize: 18, radius: 10),
+                  const SizedBox(width: 12),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Local Agent',
+                        style: GoogleFonts.interTight(
+                          fontSize: 19,
+                          fontWeight: FontWeight.w600,
+                          letterSpacing: -0.3,
+                          color: AppTheme.ink,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Eyebrow(_headerName.toUpperCase()),
+                    ],
+                  ),
+                ],
+              ),
             ),
-          ),
-          const SizedBox(height: 30),
-          ListTile(
-            leading: const Icon(Icons.add_rounded, color: Colors.white70),
-            title: const Text('New Chat', style: TextStyle(color: Colors.white70)),
-            onTap: () {
-              Navigator.pop(context);
-              _createNewChat();
-            },
-          ),
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-            child: Text('Recent', style: TextStyle(color: Colors.white38, fontSize: 12, fontWeight: FontWeight.bold)),
-          ),
-          Expanded(
-            child: ListView.builder(
-              padding: EdgeInsets.zero,
-              itemCount: _sessions.length,
-              itemBuilder: (context, index) {
-                final session = _sessions[index];
-                final isSelected = session['id'] == _currentSessionId;
-                return ListTile(
-                  title: Text(session['title'], style: TextStyle(color: isSelected ? Colors.white : Colors.white60, fontSize: 14), maxLines: 1, overflow: TextOverflow.ellipsis),
-                  onTap: () => _switchSession(session['id'] as int),
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 24),
-                );
+            _drawerItem(
+              icon: Icons.add_rounded,
+              label: 'New Chat',
+              selected: true,
+              onTap: () {
+                Navigator.pop(context);
+                _createNewChat();
               },
             ),
-          ),
-          const Divider(color: Colors.white10),
-          ListTile(
-            leading: const Icon(Icons.delete_outline_rounded, color: Colors.white38),
-            title: const Text('Clear History', style: TextStyle(color: Colors.white38, fontSize: 13)),
-            onTap: () async {
-              await _dbService.clearChatHistory();
-              await _createNewChat();
-              if (mounted) Navigator.pop(context);
-            },
-          ),
-          const SizedBox(height: 20),
-        ],
+            _drawerItem(
+              icon: Icons.search_rounded,
+              label: 'Search chats',
+              selected: false,
+              onTap: () => Navigator.pop(context),
+            ),
+            const Padding(
+              padding: EdgeInsets.fromLTRB(20, 16, 20, 8),
+              child: Eyebrow('RECENT'),
+            ),
+            Expanded(
+              child: ListView.builder(
+                padding: EdgeInsets.zero,
+                itemCount: _sessions.length,
+                itemBuilder: (context, index) {
+                  final session = _sessions[index];
+                  final isSelected = session['id'] == _currentSessionId;
+                  DateTime? createdAt;
+                  try {
+                    final ts = session['created_at'];
+                    if (ts is int) {
+                      createdAt = DateTime.fromMillisecondsSinceEpoch(ts);
+                    } else if (ts is String) {
+                      createdAt = DateTime.tryParse(ts);
+                    }
+                  } catch (_) {}
+                  return InkWell(
+                    onTap: () => _switchSession(session['id'] as int),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 20, vertical: 11),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              session['title'] as String,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: GoogleFonts.interTight(
+                                fontSize: 13.5,
+                                color: isSelected
+                                    ? AppTheme.ink
+                                    : AppTheme.ink2,
+                              ),
+                            ),
+                          ),
+                          if (createdAt != null)
+                            Text(
+                              _relativeWhen(createdAt),
+                              style: GoogleFonts.jetBrainsMono(
+                                fontSize: 9.5,
+                                color: AppTheme.muted2,
+                                letterSpacing: 0.4,
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+            Container(
+              padding: const EdgeInsets.fromLTRB(20, 14, 20, 14),
+              decoration: const BoxDecoration(
+                border: Border(top: BorderSide(color: AppTheme.border)),
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    width: 28,
+                    height: 28,
+                    decoration: BoxDecoration(
+                      color: AppTheme.surface2,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    alignment: Alignment.center,
+                    child: Text(
+                      'SD',
+                      style: GoogleFonts.jetBrainsMono(
+                        fontSize: 10,
+                        color: AppTheme.ink2,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'shantosh',
+                          style: GoogleFonts.interTight(
+                            color: AppTheme.ink2,
+                            fontSize: 12,
+                          ),
+                        ),
+                        Text(
+                          _isCloud ? 'CLOUD · ONLINE' : 'LOCAL · OFFLINE',
+                          style: GoogleFonts.jetBrainsMono(
+                            color: AppTheme.muted,
+                            fontSize: 9.5,
+                            letterSpacing: 0.6,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.settings_outlined,
+                        color: AppTheme.ink2, size: 18),
+                    onPressed: () {
+                      Navigator.pop(context);
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                            builder: (_) => const SettingsScreen()),
+                      );
+                    },
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
 
-  Widget _buildMessageComposer() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 12.0),
-      color: Colors.black,
-      child: SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
+  Widget _drawerItem({
+    required IconData icon,
+    required String label,
+    required bool selected,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      child: Container(
+        color: selected ? AppTheme.surface : Colors.transparent,
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+        child: Row(
           children: [
-            if (_selectedImagePath != null)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 12.0),
-                child: Row(
-                  children: [
-                    Stack(
-                      clipBehavior: Clip.none,
-                      children: [
-                        ClipRRect(
-                          borderRadius: BorderRadius.circular(14),
-                          child: Image.file(
-                            File(_selectedImagePath!),
-                            height: 70,
-                            width: 70,
-                            fit: BoxFit.cover,
-                          ),
-                        ),
-                        Positioned(
-                          right: -8,
-                          top: -8,
-                          child: GestureDetector(
-                            onTap: () => setState(() => _selectedImagePath = null),
-                            child: Container(
-                              padding: const EdgeInsets.all(2),
-                              decoration: const BoxDecoration(
-                                color: Colors.white,
-                                shape: BoxShape.circle,
-                              ),
-                              child: const Icon(Icons.close_rounded, color: Colors.black, size: 14),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
+            Icon(icon,
+                size: 18,
+                color: selected ? AppTheme.ink : AppTheme.ink2),
+            const SizedBox(width: 14),
+            Text(
+              label,
+              style: GoogleFonts.interTight(
+                fontSize: 14,
+                color: selected ? AppTheme.ink : AppTheme.ink2,
               ),
-            Row(
-              children: [
-                Expanded(
-                  child: Container(
-                    height: 52,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF242424),
-                      borderRadius: BorderRadius.circular(26.0),
-                    ),
-                    child: Row(
-                      children: [
-                        IconButton(
-                          icon: const Icon(Icons.add_rounded, color: Colors.white, size: 24),
-                          onPressed: _pickImage,
-                        ),
-                        Expanded(
-                          child: TextField(
-                            controller: _textController,
-                            textCapitalization: TextCapitalization.sentences,
-                            onSubmitted: _handleSubmitted,
-                            onTap: () => Future.delayed(const Duration(milliseconds: 300), _scrollToBottom),
-                            style: AppTextStyles.body.copyWith(
-                                color: Colors.white, fontSize: 16),
-                            cursorColor: Colors.white,
-                            // Override the global inputDecorationTheme so the
-                            // chat box doesn't get an outlined blue focus
-                            // ring on top of the rounded grey pill.
-                            decoration: InputDecoration(
-                              hintText: 'Ask Agent...',
-                              hintStyle: AppTextStyles.body.copyWith(
-                                color: Colors.white.withValues(alpha: 0.4),
-                                fontSize: 16,
-                              ),
-                              border: InputBorder.none,
-                              enabledBorder: InputBorder.none,
-                              focusedBorder: InputBorder.none,
-                              disabledBorder: InputBorder.none,
-                              errorBorder: InputBorder.none,
-                              focusedErrorBorder: InputBorder.none,
-                              filled: false,
-                              isDense: true,
-                              contentPadding: const EdgeInsets.symmetric(vertical: 12),
-                            ),
-                          ),
-                        ),
-                        GestureDetector(
-                          onTap: () {
-                            if (_speechToText.isNotListening) {
-                              _startListening();
-                            } else {
-                              _stopListening();
-                            }
-                          },
-                          child: Icon(
-                            _speechToText.isNotListening ? Icons.mic_none_rounded : Icons.mic_rounded,
-                            color: _speechToText.isNotListening ? Colors.white70 : Colors.blueAccent,
-                            size: 22,
-                          ),
-                        ),
-                        const SizedBox(width: 16),
-                      ],
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                ValueListenableBuilder<TextEditingValue>(
-                  valueListenable: _textController,
-                  builder: (context, value, child) {
-                    final bool hasText = value.text.trim().isNotEmpty || _selectedImagePath != null;
-                    final Widget icon;
-                    final Color iconBg;
-
-                    if (_isTyping) {
-                      icon = const Icon(Icons.stop_rounded, color: Colors.white, size: 24);
-                      iconBg = Colors.red.withValues(alpha: 0.8);
-                    } else if (hasText) {
-                      icon = const Icon(Icons.arrow_upward_rounded, color: Colors.black, size: 24);
-                      iconBg = Colors.white;
-                    } else {
-                      icon = const Icon(Icons.graphic_eq_rounded, color: Colors.black, size: 20);
-                      iconBg = Colors.white;
-                    }
-
-                    return GestureDetector(
-                      onTap: () {
-                        if (_isTyping) {
-                          // Halt the model. _handleSubmitted's awaited
-                          // sendMessage will return with the partial text the
-                          // model produced so far, and the regular completion
-                          // path adds it as a normal assistant message and
-                          // flips _isTyping off — so we don't toggle state
-                          // here ourselves.
-                          _agentService.stopGeneration();
-                        } else if (hasText) {
-                          _handleSubmitted(_textController.text);
-                        } else {
-                          _openVoiceMode();
-                        }
-                      },
-                      child: AnimatedSwitcher(
-                        duration: const Duration(milliseconds: 300),
-                        transitionBuilder: (Widget child, Animation<double> animation) {
-                          return ScaleTransition(scale: animation, child: child);
-                        },
-                        child: Container(
-                          key: ValueKey<int>(_isTyping ? 0 : (hasText ? 1 : 2)),
-                          height: 48,
-                          width: 48,
-                          decoration: BoxDecoration(
-                            color: iconBg,
-                            shape: BoxShape.circle,
-                          ),
-                          child: icon,
-                        ),
-                      ),
-                    );
-                  },
-                ),
-              ],
             ),
           ],
         ),
@@ -977,10 +1078,6 @@ class _KeyboardObserver extends WidgetsBindingObserver {
   void didChangeMetrics() => onKeyboardVisible();
 }
 
-/// Last item in the chat list while the agent is working.
-///
-/// Subscribes only to the three ValueNotifiers it needs — token updates and
-/// the rotating "Thinking..." label don't rebuild the parent ListView.
 class _TypingIndicator extends StatelessWidget {
   final ValueListenable<String> streamingText;
   final ValueListenable<bool> isStreaming;
@@ -1006,20 +1103,22 @@ class _TypingIndicator extends StatelessWidget {
           builder: (context, text, __) {
             if (text.isNotEmpty) {
               return Padding(
-                padding: const EdgeInsets.symmetric(vertical: 8.0),
+                padding: const EdgeInsets.symmetric(vertical: 8),
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const Padding(
-                      padding: EdgeInsets.only(right: 12.0, top: 4),
-                      child: Icon(Icons.auto_awesome_rounded,
-                          size: 20, color: Colors.white),
+                      padding: EdgeInsets.only(right: 12, top: 2),
+                      child: SparkleIcon(size: 20),
                     ),
-                    Flexible(
+                    Expanded(
                       child: Text(
                         text,
-                        style: AppTextStyles.body.copyWith(
-                            fontSize: 16, color: Colors.white, height: 1.5),
+                        style: GoogleFonts.interTight(
+                          fontSize: 15,
+                          color: AppTheme.ink,
+                          height: 1.55,
+                        ),
                       ),
                     ),
                   ],
@@ -1030,8 +1129,7 @@ class _TypingIndicator extends StatelessWidget {
               padding: const EdgeInsets.only(left: 4, top: 8, bottom: 8),
               child: ValueListenableBuilder<int>(
                 valueListenable: thinkingIndex,
-                builder: (context, idx, _) =>
-                    ValueListenableBuilder<int>(
+                builder: (context, idx, _) => ValueListenableBuilder<int>(
                   valueListenable: typingSeconds,
                   builder: (context, secs, __) => Row(
                     children: [
@@ -1040,15 +1138,16 @@ class _TypingIndicator extends StatelessWidget {
                         height: 12,
                         child: CircularProgressIndicator(
                           strokeWidth: 1.5,
-                          color: Colors.white.withValues(alpha: 0.3),
+                          color: AppTheme.ink,
+                          backgroundColor: AppTheme.muted2,
                         ),
                       ),
                       const SizedBox(width: 10),
                       Text(
-                        thinkingMessages[idx],
-                        style: AppTextStyles.small.copyWith(
+                        '${thinkingMessages[idx]}…',
+                        style: GoogleFonts.interTight(
                           fontSize: 13,
-                          color: Colors.white.withValues(alpha: 0.4),
+                          color: AppTheme.muted,
                           fontStyle: FontStyle.italic,
                         ),
                       ),
@@ -1056,16 +1155,16 @@ class _TypingIndicator extends StatelessWidget {
                         const SizedBox(width: 8),
                         Container(
                           padding: const EdgeInsets.symmetric(
-                              horizontal: 6, vertical: 2),
+                              horizontal: 6, vertical: 3),
                           decoration: BoxDecoration(
-                            color: Colors.white.withValues(alpha: 0.06),
+                            color: AppTheme.surface,
                             borderRadius: BorderRadius.circular(4),
                           ),
                           child: Text(
                             '${secs}s',
-                            style: AppTextStyles.mono.copyWith(
+                            style: GoogleFonts.jetBrainsMono(
                               fontSize: 10,
-                              color: Colors.white.withValues(alpha: 0.55),
+                              color: AppTheme.ink2,
                               fontWeight: FontWeight.w600,
                               letterSpacing: 0.5,
                             ),
@@ -1084,24 +1183,20 @@ class _TypingIndicator extends StatelessWidget {
   }
 }
 
-/// Brief state shown while the chat session is being set up. The heavy model
-/// load happens on SplashScreen, so this is just for the quick DB-session +
-/// system-prompt warm-up step.
 class _ChatBootstrapping extends StatelessWidget {
   const _ChatBootstrapping();
 
   @override
   Widget build(BuildContext context) {
-    return Center(
+    return const Center(
       child: SizedBox(
         width: 20,
         height: 20,
         child: CircularProgressIndicator(
           strokeWidth: 1.6,
-          color: Colors.white.withValues(alpha: 0.35),
+          color: AppTheme.muted,
         ),
       ),
     );
   }
 }
-

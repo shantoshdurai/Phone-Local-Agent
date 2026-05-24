@@ -8,6 +8,7 @@ class AgentResponse {
   final double? tps;
   final double? evalTime;
   final String? toolName;
+  final String? imagePath;
 
   AgentResponse(
     this.text,
@@ -16,5 +17,6 @@ class AgentResponse {
     this.tps,
     this.evalTime,
     this.toolName,
+    this.imagePath,
   });
 }
