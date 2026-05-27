@@ -11,6 +11,7 @@ import 'database_service.dart';
 import 'agent_response.dart';
 import 'gemini_service.dart';
 import 'tool_runtime.dart';
+import 'embedding/chat_memory.dart';
 import 'embedding/tool_index.dart';
 import 'tool_tiers.dart';
 
@@ -233,13 +234,22 @@ class AgentService {
     }
     final history = await _dbService.getChatHistory(sessionId);
     final replay = <Message>[];
+
+    // Rebuild ChatMemory's embedding index for this session from scratch.
+    // The index is in-memory only — survives the chat lifetime but not
+    // process restarts, so loadSession is responsible for repopulating
+    // it from the db. Embeddings compute in the background via
+    // ChatMemory.remember; the chat is usable immediately, RAG recall
+    // gets stronger as embeddings land.
+    ChatMemory.instance.clear(sessionId);
+
     for (final msg in history) {
       final role = msg['role'] as String;
       if (role != 'user' && role != 'assistant') continue;
-      replay.add(Message.text(
-        text: msg['content'] as String,
-        isUser: role == 'user',
-      ));
+      final content = msg['content'] as String;
+      replay.add(Message.text(text: content, isUser: role == 'user'));
+      // ignore: discarded_futures
+      ChatMemory.instance.remember(sessionId, content, role == 'user');
     }
     // Truncate history to prevent OUT_OF_RANGE KV cache crashes
     if (replay.length > 6) {
@@ -395,6 +405,57 @@ class AgentService {
       await FlutterBackground.enableBackgroundExecution();
     } catch (_) {}
     _statusController.add('Thinking...');
+
+    // Chat-memory contamination check: if the last few assistant turns
+    // captured a tool failure / refusal, the model's KV cache still has
+    // those (plus the raw tool-error responses, which aren't in the db
+    // but ARE in _chat's session). On the next prefill the small model
+    // latches onto that failure and produces "open calculator" replies
+    // about Play Store — the exact bug screenshotted.
+    //
+    // Fix: rebuild the chat session with a recall-filtered history.
+    // recall() always keeps the last 2 user/assistant turns (short-term
+    // continuity) and adds older turns by cosine relevance to the new
+    // query up to a 600-token budget. The rebuild drops the in-session
+    // tool-error responses entirely — the new chat only replays
+    // user/assistant pairs, never tool responses — so the failure
+    // evaporates from the model's KV cache before the next prefill.
+    //
+    // We only rebuild when contamination is likely. Per-turn rebuilds
+    // cost ~1-2s of platform-channel + replay; not worth paying every
+    // turn just to filter context that's already coherent.
+    if (_activeSpec.supportsTools &&
+        ChatMemory.instance.sizeOf(sessionId) > 2 &&
+        ChatMemory.instance.recentlyFailed(sessionId)) {
+      try {
+        _statusController.add('Refocusing...');
+        final recall = await ChatMemory.instance.recall(
+          sessionId,
+          text,
+          tokenBudget: 600,
+        );
+        final replay = recall.messages
+            .map((m) => Message.text(text: m.text, isUser: m.isUser))
+            .toList();
+        // chat_screen / voice_mode already called _dbService.saveMessage
+        // for this turn before invoking us, which means ChatMemory has
+        // already remembered it. Drop it from the replay so the next
+        // addQuery (with the RAG-hint prefix added below) doesn't
+        // duplicate the current user message in the model's KV cache.
+        if (replay.isNotEmpty &&
+            replay.last.text == text &&
+            replay.last.isUser) {
+          replay.removeLast();
+        }
+        await _rebuildChat(replay);
+        debugPrint(
+            '[AgentService] context refocused: ${replay.length} msgs, '
+            '~${recall.totalTokens} tokens');
+      } catch (e) {
+        debugPrint('[AgentService] refocus failed, continuing as-is: $e');
+      }
+      _statusController.add('Thinking...');
+    }
 
     // RAG hint: embed the user query, retrieve the top-3 most relevant
     // tool names from the index, and prefix them as a one-liner before the

@@ -1,5 +1,6 @@
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
+import 'embedding/chat_memory.dart';
 import 'file_service.dart';
 
 class DatabaseService {
@@ -124,6 +125,17 @@ class DatabaseService {
       'timestamp': DateTime.now().toIso8601String(),
       'session_id': sessionId,
     });
+    // Mirror the message into ChatMemory so the embedding index stays in
+    // sync with the persisted history. Done here (not at each callsite)
+    // because saveMessage is called from chat_screen / voice_mode /
+    // agent_service / gemini_service — a single hook here covers all of
+    // them without their authors needing to know about RAG. Fire and
+    // forget; embedding happens in the background and never blocks the
+    // db write or the chat turn.
+    if (role == 'user' || role == 'assistant') {
+      // ignore: discarded_futures
+      ChatMemory.instance.remember(sessionId, content, role == 'user');
+    }
   }
 
   Future<List<Map<String, dynamic>>> getChatHistory(int sessionId) async {
