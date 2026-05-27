@@ -31,6 +31,19 @@ class ModelSpec {
   /// screen picks the heaviest spec the device clears as the default.
   final int minRamGB;
 
+  /// How many tools to expose to this model in the chat template.
+  ///
+  /// Small models (≤2B params) cannot reliably reason over a long tool
+  /// catalog — Qwen 2.5 1.5B on a 26-tool list degenerates into reciting
+  /// tool descriptions verbatim instead of choosing one. Larger models
+  /// are fine. ToolTiers.selectForBudget fills core tools first, then
+  /// common, then niche, until the budget is hit.
+  ///
+  /// ToolRuntime still implements all 26 tools regardless — this only
+  /// limits what the LLM sees in its function-call template. The agent
+  /// never loses capability; the model just gets a focused shortlist.
+  final int toolBudget;
+
   const ModelSpec({
     required this.id,
     required this.displayName,
@@ -49,6 +62,7 @@ class ModelSpec {
     required this.topK,
     required this.topP,
     required this.minRamGB,
+    this.toolBudget = 26,
   });
 
   String get sizeLabel {
@@ -100,6 +114,13 @@ class ModelRegistry {
     topK: 40,
     topP: 0.95,
     minRamGB: 4,
+    // Qwen 2.5 1.5B drowns in the full 26-tool catalog: prefill blew
+    // past 100s on Waydroid and the model degenerated into reciting
+    // tool descriptions ("This tool lets you choose a course or a
+    // career..."). 9 keeps prefill snappy and tool selection coherent
+    // while preserving every core capability (device, time, search,
+    // connectivity, launch_app, plus 4 of the common tier).
+    toolBudget: 9,
   );
 
   // Phi-4 mini.
@@ -141,13 +162,22 @@ class ModelRegistry {
     fileType: ModelFileType.task,
     preferredBackend: PreferredBackend.cpu,
     supportsVision: false,
-    supportsTools: false,
+    // Enabled — AgentService wires supportsFunctionCalls:true into the
+    // chat session, so the SDK injects its own JSON tool catalog and
+    // parses function calls back natively. The catalog Phi sees is
+    // narrowed by toolBudget below (via selectForBudget in tool_tiers.dart)
+    // so the injected JSON + chat template fits inside the ekv1280 KV cache.
+    supportsTools: true,
     isThinking: false,
     maxTokens: 1280,
     temperature: 0.6,
     topK: 40,
     topP: 0.95,
     minRamGB: 6,
+    // Phi-4 mini (3.8B) handles a broader catalog than Qwen 1.5B but
+    // still benefits from focused selection on a 1280 KV cap. 14 = all
+    // core + most common, no niche.
+    toolBudget: 14,
   );
 
   static const List<ModelSpec> all = [phi4_mini, qwen2_5_1_5b];
