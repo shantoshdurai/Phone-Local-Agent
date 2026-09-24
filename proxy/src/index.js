@@ -76,6 +76,33 @@ export default {
       }), { headers: { 'content-type': 'application/json' } });
     }
 
+    // "Report this response": Play requires AI apps to let users flag
+    // output to the developer. Reports appear in the Worker logs and, if the
+    // REPORTS namespace is bound, are kept for 90 days.
+    if (request.method === 'POST' && url.pathname === '/report') {
+      const installId = request.headers.get('x-install-id') ?? '';
+      const raw = await request.text();
+      if (raw.length > 8000) return geminiError(413, 'INVALID_ARGUMENT', 'Report too large.');
+      let report;
+      try {
+        report = JSON.parse(raw);
+      } catch {
+        return geminiError(400, 'INVALID_ARGUMENT', 'Invalid JSON.');
+      }
+      const entry = {
+        at: new Date().toISOString(),
+        installId,
+        reason: String(report.reason ?? '').slice(0, 100),
+        model: String(report.model ?? '').slice(0, 100),
+        response: String(report.response ?? '').slice(0, 2000),
+      };
+      console.log(JSON.stringify({ type: 'report', ...entry }));
+      if (env.REPORTS) {
+        ctx.waitUntil(env.REPORTS.put(`report:${entry.at}:${installId}`, JSON.stringify(entry), { expirationTtl: 60 * 60 * 24 * 90 }));
+      }
+      return new Response(JSON.stringify({ ok: true }), { headers: { 'content-type': 'application/json' } });
+    }
+
     const match = url.pathname.match(/^\/v1beta\/models\/([A-Za-z0-9._-]+):(streamGenerateContent|generateContent)$/);
     if (request.method !== 'POST' || !match) {
       return geminiError(404, 'NOT_FOUND', 'Not found.');

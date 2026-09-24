@@ -7,6 +7,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../models/chat_message.dart';
+import '../services/report_service.dart';
 import '../theme/app_theme.dart';
 import 'design_components.dart';
 
@@ -134,7 +135,7 @@ class _MessageBubbleState extends State<MessageBubble>
         ),
         Expanded(
           child: GestureDetector(
-            onLongPress: _copy,
+            onLongPress: _agentActions,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -252,6 +253,73 @@ class _MessageBubbleState extends State<MessageBubble>
       content: Text('Copied'),
       duration: Duration(seconds: 1),
       behavior: SnackBarBehavior.floating,
+    ));
+  }
+
+  Future<void> _agentActions() async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: AppTheme.surface,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: Icon(Icons.copy_rounded, color: AppTheme.ink2),
+              title: Text('Copy', style: GoogleFonts.interTight(color: AppTheme.ink)),
+              onTap: () => Navigator.pop(ctx, 'copy'),
+            ),
+            ListTile(
+              leading: Icon(Icons.flag_outlined, color: AppTheme.ink2),
+              title: Text('Report this response', style: GoogleFonts.interTight(color: AppTheme.ink)),
+              subtitle: Text('Tell the developer it was offensive, harmful or wrong',
+                  style: GoogleFonts.interTight(color: AppTheme.muted, fontSize: 12)),
+              onTap: () => Navigator.pop(ctx, 'report'),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (!mounted) return;
+    if (action == 'copy') _copy();
+    if (action == 'report') await _report();
+  }
+
+  Future<void> _report() async {
+    final reason = await showDialog<String>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        backgroundColor: AppTheme.surface,
+        title: Text('What\'s wrong with it?',
+            style: GoogleFonts.interTight(color: AppTheme.ink, fontWeight: FontWeight.w600)),
+        children: [
+          for (final r in ReportService.reasons)
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(ctx, r),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Text(r, style: GoogleFonts.interTight(color: AppTheme.ink2, fontSize: 15)),
+              ),
+            ),
+        ],
+      ),
+    );
+    if (reason == null || !mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    final result = await ReportService().report(
+      response: message.text,
+      reason: reason,
+      model: message.modelLabel,
+    );
+    messenger.showSnackBar(SnackBar(
+      behavior: SnackBarBehavior.floating,
+      content: Text(switch (result) {
+        ReportResult.sent => 'Thanks. The report was sent to the developer.',
+        ReportResult.emailOpened => 'Thanks. Send the email to finish the report.',
+        ReportResult.unavailable => 'Reporting isn\'t set up in this build.',
+      }),
     ));
   }
 }

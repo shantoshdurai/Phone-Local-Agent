@@ -91,3 +91,19 @@ test('oversized bodies are refused', async () => {
   );
   assert.equal(res.status, 413);
 });
+
+test('reports are accepted and stored', async () => {
+  const store = new Map();
+  const kv = { put: async (k, v) => { store.set(k, v); } };
+  const c = ctx();
+  const res = await worker.fetch(
+    req('/report', { body: { reason: 'Offensive or harmful', model: 'Gemma 4 E2B', response: 'bad text' } }),
+    env({ REPORTS: kv }),
+    c,
+  );
+  await Promise.all(c.pending);
+  assert.equal(res.status, 200);
+  const [saved] = [...store.values()].map((v) => JSON.parse(v));
+  assert.equal(saved.reason, 'Offensive or harmful');
+  assert.equal(saved.response, 'bad text');
+});
