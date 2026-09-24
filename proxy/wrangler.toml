@@ -1,0 +1,31 @@
+name = "local-agent-proxy"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+
+[vars]
+# Models the app may use through the proxy (Gemini `-latest` aliases follow
+# Google's releases, so the proxy keeps working when versions retire).
+ALLOWED_MODELS = "gemini-flash-lite-latest,gemini-flash-latest"
+MAX_OUTPUT_TOKENS = "2048"
+MAX_BODY_BYTES = "400000"
+# Messages per install per day (needs the QUOTA namespace below).
+DAILY_LIMIT = "150"
+
+# Burst limit: 12 requests per minute per install (free on all plans).
+[[ratelimits]]
+name = "RATE_LIMITER"
+namespace_id = "1001"
+
+  [ratelimits.simple]
+  limit = 12
+  period = 60
+
+# Daily quota. Create the namespace, then uncomment and paste its id:
+#   npx wrangler kv namespace create QUOTA
+# [[kv_namespaces]]
+# binding = "QUOTA"
+# id = "<id from the command above>"
+
+# Secrets (never commit these):
+#   npx wrangler secret put GEMINI_API_KEY   # from https://aistudio.google.com/apikey
+#   npx wrangler secret put APP_TOKENS       # e.g. "local-agent-app"; must match HOSTED_APP_TOKEN in the app build
