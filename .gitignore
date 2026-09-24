@@ -48,3 +48,4 @@ app.*.map.json
 # Local backup files from in-place edits
 *.orig
 *.patch
+/dist/
