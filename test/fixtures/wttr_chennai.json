@@ -1,0 +1,106 @@
+{
+ "current_condition": [
+  {
+   "FeelsLikeC": "27",
+   "humidity": "70",
+   "temp_C": "26",
+   "weatherDesc": [
+    {
+     "value": "Light rain shower"
+    }
+   ],
+   "windspeedKmph": "23"
+  }
+ ],
+ "nearest_area": [
+  {
+   "areaName": [
+    {
+     "value": "Chennai"
+    }
+   ],
+   "country": [
+    {
+     "value": "India"
+    }
+   ],
+   "latitude": "13.083",
+   "longitude": "80.283",
+   "population": "4328063",
+   "region": [
+    {
+     "value": "Tamil Nadu"
+    }
+   ],
+   "weatherUrl": [
+    {
+     "value": "https://www.worldweatheronline.com/v2/weather.aspx?q=13.083,80.283"
+    }
+   ]
+  }
+ ],
+ "weather": [
+  {
+   "date": "2026-09-24",
+   "hourly": [
+    {
+     "chanceofrain": "19"
+    },
+    {
+     "chanceofrain": "18"
+    },
+    {
+     "chanceofrain": "46"
+    },
+    {
+     "chanceofrain": "12"
+    },
+    {
+     "chanceofrain": "11"
+    },
+    {
+     "chanceofrain": "16"
+    },
+    {
+     "chanceofrain": "50"
+    },
+    {
+     "chanceofrain": "16"
+    }
+   ],
+   "maxtempC": "34",
+   "mintempC": "26"
+  },
+  {
+   "date": "2026-09-25",
+   "hourly": [
+    {
+     "chanceofrain": "15"
+    },
+    {
+     "chanceofrain": "18"
+    },
+    {
+     "chanceofrain": "18"
+    },
+    {
+     "chanceofrain": "13"
+    },
+    {
+     "chanceofrain": "11"
+    },
+    {
+     "chanceofrain": "11"
+    },
+    {
+     "chanceofrain": "15"
+    },
+    {
+     "chanceofrain": "13"
+    }
+   ],
+   "maxtempC": "34",
+   "mintempC": "27"
+  }
+ ]
+}
