@@ -3,6 +3,8 @@ import 'dart:convert';
 import '../app_service.dart';
 import '../device_service.dart';
 import '../file_service.dart';
+import '../media_service.dart';
+import '../memory_service.dart';
 import '../personal_service.dart';
 import '../search_service.dart';
 import '../utility_service.dart';
@@ -20,6 +22,14 @@ class ToolConfirmation {
 }
 
 typedef ConfirmCallback = Future<bool> Function(ToolConfirmation request);
+
+/// Signature of tool execution, injectable for tests.
+typedef ToolExecutor = Future<Map<String, dynamic>> Function(
+    String name, Map<String, dynamic> args, ToolContext context);
+
+/// The real executor.
+Future<Map<String, dynamic>> runTool(String name, Map<String, dynamic> args, ToolContext context) =>
+    ToolRuntime.instance.execute(name, args, context: context);
 
 class ToolContext {
   final bool confirmSensitive;
@@ -43,6 +53,7 @@ class ToolRuntime {
   final _personal = PersonalService();
   final _search = SearchService();
   final _weather = WeatherService();
+  final _media = MediaService();
 
   Future<Map<String, dynamic>> execute(
     String name,
@@ -155,6 +166,21 @@ class ToolRuntime {
                 argString(args, 'phone')!, argString(args, 'message')!))
             ? {'success': true}
             : {'error': 'Couldn\'t open WhatsApp. Is it installed?'};
+      case 'send_sms':
+        return (await _personal.sendSms(argString(args, 'phone')!, argString(args, 'message')!))
+            ? {'success': true}
+            : {'error': 'Couldn\'t open the messaging app.'};
+      case 'play_media':
+        return _media.play(argString(args, 'query')!, app: argString(args, 'app') ?? 'youtube');
+      case 'remember':
+        final memory = await MemoryService.instance.add(argString(args, 'fact')!);
+        return {'success': true, 'saved': memory.text};
+      case 'recall_memory':
+        final found = await MemoryService.instance.search(argString(args, 'query'));
+        return {
+          'memories': [for (final m in found) m.text],
+          if (found.isEmpty) 'note': 'Nothing saved about that.',
+        };
       case 'schedule_event':
         final start = parseLocalDateTime(argString(args, 'start')!);
         if (start == null) {
@@ -221,8 +247,11 @@ class ToolRuntime {
         return ToolConfirmation(name, 'Call ${argString(args, 'phone')}?',
             'Opens the dialer. You still press the call button.');
       case 'send_whatsapp':
-        return ToolConfirmation(name, 'WhatsApp ${argString(args, 'phone')}?',
-            '"${argString(args, 'message') ?? ''}"');
+        return ToolConfirmation(name, 'WhatsApp ${args['contact'] ?? argString(args, 'phone')}?',
+            '"${argString(args, 'message') ?? ''}"\nOpens WhatsApp with this message. You still press send.');
+      case 'send_sms':
+        return ToolConfirmation(name, 'Text ${args['contact'] ?? argString(args, 'phone')}?',
+            '"${argString(args, 'message') ?? ''}"\nOpens your messaging app. You still press send.');
       case 'schedule_event':
         final start = parseLocalDateTime(argString(args, 'start') ?? '');
         return ToolConfirmation(
@@ -270,7 +299,23 @@ class ToolRuntime {
       case 'make_phone_call':
         return 'Opening the dialer for ${r['phone']}.';
       case 'send_whatsapp':
-        return 'WhatsApp is open with your message — tap send.';
+        return 'WhatsApp is open with your message${args['contact'] != null ? ' to ${args['contact']}' : ''}. Tap send.';
+      case 'send_sms':
+        return 'Your message${args['contact'] != null ? ' to ${args['contact']}' : ''} is ready in Messages. Tap send.';
+      case 'play_media':
+        final title = r['title'];
+        if (r['playing'] == true) {
+          return title != null ? 'Playing "$title" on ${r['app']}.' : 'Playing ${r['query']} on ${r['app']}.';
+        }
+        return 'Opened ${r['app']} results for ${r['query']}.';
+      case 'remember':
+        return 'Got it. I\'ll remember: ${r['saved']}.';
+      case 'recall_memory':
+        final memories = (r['memories'] as List?) ?? const [];
+        if (memories.isEmpty) return 'I don\'t have anything saved about that yet.';
+        return memories.length == 1
+            ? 'You told me: ${memories.first}.'
+            : 'Here\'s what you asked me to remember:\n${memories.map((m) => '• $m').join('\n')}';
       case 'copy_to_clipboard':
         return 'Copied to clipboard.';
       case 'read_clipboard':

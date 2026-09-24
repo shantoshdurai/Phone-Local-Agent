@@ -6,6 +6,11 @@ import '../app_settings.dart';
 import '../database_service.dart';
 import '../llm/llm_types.dart';
 import '../llm/providers.dart';
+import '../local/inference_settings.dart';
+import '../local/local_engine.dart';
+import '../local/local_model.dart';
+import '../memory_service.dart';
+import '../screen_awake.dart';
 import '../tools/tool_runtime.dart';
 import 'agent_types.dart';
 import 'cloud_agent.dart';
@@ -42,8 +47,12 @@ class AgentService implements AgentEventSink {
   bool get usingGpu => _local.usingGpu;
   String get modelLabel => _target?.label ?? '';
 
+  /// The loaded on-device model and its settings (null in cloud mode).
+  LocalModel? get localModel => _target is LocalTarget ? _local.model : null;
+  InferenceSettings? get localSettings => _target is LocalTarget ? _local.settings : null;
+
   bool get supportsImages => switch (_target) {
-        LocalTarget(:final spec) => spec.supportsVision,
+        LocalTarget(:final model) => model.supportsVision,
         CloudTarget(:final config) => config.supportsImages ?? true,
         null => false,
       };
@@ -60,7 +69,7 @@ class AgentService implements AgentEventSink {
   bool isActive(AgentTarget target) {
     final current = _target;
     if (current is LocalTarget && target is LocalTarget) {
-      return current.spec.fileName == target.spec.fileName && _local.isLoaded;
+      return current.model.id == target.model.id && _local.isLoaded;
     }
     if (current is CloudTarget && target is CloudTarget) {
       return _cloud != null &&
@@ -82,10 +91,10 @@ class AgentService implements AgentEventSink {
     try {
       if (_busy) await stop();
       switch (target) {
-        case LocalTarget(:final spec):
+        case LocalTarget(:final model):
           _cloud = null;
-          await _local.load(spec, preferGpu: await AppSettings.useGpu(), onStatus: status);
-          await AppSettings.setLastLocalModel(spec.fileName);
+          await _local.load(model, onStatus: status);
+          await AppSettings.setLastLocalModel(model.id);
           await AppSettings.setMode(AgentMode.local);
         case CloudTarget(:final config):
           final key = await KeyStore.read(config.providerId);
@@ -100,9 +109,10 @@ class AgentService implements AgentEventSink {
               apiKey: key ?? '',
               baseUrl: config.baseUrl,
               config: config,
+              installId: config.preset.kind == ProviderKind.hosted ? await AppSettings.installId() : null,
             ),
             config: config,
-          );
+          )..memory = await MemoryService.instance.promptBlock();
           await AppSettings.setCloudConfig(config);
           await AppSettings.setMode(AgentMode.cloud);
       }
@@ -112,6 +122,51 @@ class AgentService implements AgentEventSink {
       status('');
       _activating = null;
       completer.complete();
+    }
+  }
+
+  /// Saves new settings for the loaded on-device model (reloading it if the
+  /// context size, threads or GPU changed).
+  Future<void> applyLocalSettings(InferenceSettings settings) async {
+    if (_busy) await stop();
+    try {
+      await _local.applySettings(settings, onStatus: status);
+    } finally {
+      status('');
+    }
+  }
+
+  /// Measures generation speed with the loaded on-device model.
+  Future<GenerationStats> benchmark() async {
+    if (_target is! LocalTarget) throw StateError('Load an on-device model first.');
+    if (_busy) await stop();
+    _busy = true;
+    try {
+      status('Measuring speed…');
+      return await _local.benchmark();
+    } finally {
+      _busy = false;
+      status('');
+    }
+  }
+
+  /// Re-reads saved memories into the prompts (after the user edits them).
+  Future<void> refreshMemory() async {
+    final block = await MemoryService.instance.promptBlock();
+    _cloud?.memory = block;
+    if (_sessionId != null) {
+      await openSession(_sessionId!);
+    } else {
+      await _local.resetConversation(const []);
+    }
+  }
+
+  /// Unloads the on-device model (e.g. before deleting its file).
+  Future<void> unloadLocal() async {
+    if (_target is LocalTarget) {
+      if (_busy) await stop();
+      await _local.unload();
+      _target = null;
     }
   }
 
@@ -179,7 +234,14 @@ class AgentService implements AgentEventSink {
     final target = _target;
     switch (target) {
       case LocalTarget():
-        return _local.run(text, imagePath: imagePath, sink: this, toolContext: context);
+        // On a slow phone a reply can take minutes; don't let the screen
+        // sleep (and the CPU suspend) halfway through.
+        await ScreenAwake.acquire();
+        try {
+          return await _local.run(text, imagePath: imagePath, sink: this, toolContext: context);
+        } finally {
+          await ScreenAwake.release();
+        }
       case CloudTarget():
         final cloud = _cloud;
         if (cloud == null) throw StateError('Cloud model isn\'t connected yet.');
@@ -211,6 +273,22 @@ class AgentService implements AgentEventSink {
       args = {'phone': phone};
     }
 
+    if (tool == 'message_contact_whatsapp' || tool == 'message_contact_sms') {
+      final name = '${args['name']}';
+      final lookup = await _resolveContact(name);
+      if (lookup.phone == null) {
+        return AgentReply(
+          text: lookup.reply!,
+          modelLabel: 'Instant',
+          toolsUsed: const ['search_contacts'],
+          seconds: sw.elapsedMilliseconds / 1000,
+          instant: true,
+        );
+      }
+      args = {'phone': lookup.phone, 'message': args['message'], 'contact': lookup.name};
+      tool = tool == 'message_contact_whatsapp' ? 'send_whatsapp' : 'send_sms';
+    }
+
     final result = await ToolRuntime.instance.execute(tool, args, context: context);
     final failed = result.containsKey('error') && result['cancelled'] != true;
     if (failed && cmd.fallThroughOnError) return null;
@@ -232,6 +310,40 @@ class AgentService implements AgentEventSink {
       instant: true,
       isError: failed,
     );
+  }
+
+  /// Finds one phone number for [name], or explains why not (not found,
+  /// several matches, no permission) in a reply the user can act on.
+  Future<({String? phone, String? name, String? reply})> _resolveContact(String name) async {
+    final lookup = await ToolRuntime.instance.execute('search_contacts', {'query': name});
+    final error = lookup['error'];
+    if (error is String) return (phone: null, name: null, reply: error);
+    final contacts = ((lookup['contacts'] as List?) ?? const [])
+        .where((c) => (c['phones'] as List).isNotEmpty)
+        .toList();
+    if (contacts.isEmpty) {
+      return (
+        phone: null,
+        name: null,
+        reply: 'I couldn\'t find "$name" with a phone number in your contacts. '
+            'Check the name, or tell me the number.',
+      );
+    }
+    final exact = contacts.where((c) => '${c['name']}'.toLowerCase() == name.toLowerCase()).toList();
+    final pick = exact.length == 1 ? exact.first : (contacts.length == 1 ? contacts.first : null);
+    if (pick == null) {
+      final names = contacts.take(5).map((c) => '• ${c['name']}').join('\n');
+      return (phone: null, name: null, reply: 'Which one did you mean?\n$names');
+    }
+    final phones = (pick['phones'] as List).cast<String>();
+    if (phones.length > 1) {
+      return (
+        phone: null,
+        name: null,
+        reply: '${pick['name']} has ${phones.length} numbers: ${phones.join(', ')}. Which one?',
+      );
+    }
+    return (phone: phones.first, name: '${pick['name']}', reply: null);
   }
 
   Future<String?> _uniqueContactNumber(String name) async {

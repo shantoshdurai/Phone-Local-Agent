@@ -30,6 +30,14 @@ class QuickCommands {
   QuickCommands._();
 
   static QuickCommand? match(String input) {
+    // Messages and memories keep the user's own wording and casing, so they
+    // are matched before normalisation.
+    final raw = input.trim().replaceAll(RegExp(r'\s+'), ' ');
+    if (raw.isEmpty || raw.length > 300) return null;
+    for (final matcher in _rawMatchers) {
+      final cmd = matcher(raw);
+      if (cmd != null) return cmd;
+    }
     final s = normalize(input);
     if (s.isEmpty || s.length > 80) return null;
     for (final matcher in _matchers) {
@@ -37,6 +45,99 @@ class QuickCommands {
       if (cmd != null) return cmd;
     }
     return null;
+  }
+
+  static final List<QuickCommand? Function(String)> _rawMatchers = [
+    _message,
+    _remember,
+    _recall,
+    _play,
+  ];
+
+  static const _polite = r"^(?:(?:hey|ok|okay|please|pls|can you|could you|would you|will you|go ahead and|just)\s+)*";
+
+  // ── messages ─────────────────────────────────────────────────────────────
+  // "text mom on whatsapp that I'm running late", "whatsapp John: see you
+  // at 5", "send a message to Priya saying happy birthday". Resolved to a
+  // number from contacts in AgentService; WhatsApp or SMS opens with the
+  // text filled in and the user presses send.
+  static QuickCommand? _message(String raw) {
+    final re = RegExp(
+      '$_polite'
+      r'(?:send (?:a |an )?(?:(?:whatsapp|text|sms)(?: message)?|message|msg) to|message|msg|text|whatsapp|tell)\s+'
+      r'(?<name>[^,:]{1,40}?)'
+      r'(?:\s+(?:on|via|in|through|using|over) (?<app>whatsapp|sms|text|messages))?'
+      r'(?:\s*[,:]\s*|\s+(?:that|saying|to say|and say|and tell (?:him|her|them)(?: that)?|telling (?:him|her|them)(?: that)?)\s+)'
+      r'(?<msg>.+)$',
+      caseSensitive: false,
+    );
+    final m = re.firstMatch(raw);
+    if (m == null) return null;
+    var name = m.namedGroup('name')!.trim();
+    name = name.replaceFirst(RegExp(r'^(?:my|to)\s+', caseSensitive: false), '');
+    final message = m.namedGroup('msg')!.trim();
+    if (name.isEmpty || message.isEmpty) return null;
+    final lead = raw.toLowerCase();
+    // "tell me that…", "text me" are not messages to a contact.
+    if (RegExp(r'^(?:me|us|you|it|this|that)$', caseSensitive: false).hasMatch(name)) return null;
+    // "tell X that Y" is only a message when an app is named.
+    final app = m.namedGroup('app')?.toLowerCase();
+    if (RegExp(r'^(?:\S+\s+)*tell\s').hasMatch(lead) && app == null) return null;
+    final whatsapp = app == 'whatsapp' || (app == null && lead.contains('whatsapp'));
+    return QuickCommand(
+      whatsapp ? 'message_contact_whatsapp' : 'message_contact_sms',
+      {'name': name, 'message': message},
+      fallThroughOnError: true,
+    );
+  }
+
+  // ── memory ───────────────────────────────────────────────────────────────
+  static QuickCommand? _remember(String raw) {
+    final m = RegExp('${_polite}remember (?:that |this: ?)?(?<fact>.{3,})\$', caseSensitive: false)
+        .firstMatch(raw);
+    if (m == null) return null;
+    final fact = m.namedGroup('fact')!.trim();
+    // Questions ("remember what I said?") and "remember me" aren't facts.
+    if (fact.endsWith('?') || RegExp(r'^(?:me|this|that|it)\W*$', caseSensitive: false).hasMatch(fact)) {
+      return null;
+    }
+    return QuickCommand('remember', {'fact': fact});
+  }
+
+  static QuickCommand? _recall(String raw) {
+    final s = raw.toLowerCase().replaceAll(RegExp(r'[?.!]+$'), '').trim();
+    final re = RegExp(
+      r'^(?:what do you (?:remember|know) about me|what have you remembered|'
+      r'what did i ask you to remember|show (?:me )?(?:my |your )?memor(?:y|ies)|'
+      r'what(?: is|s) in your memory|list (?:my |your )?memories)$',
+    );
+    return re.hasMatch(s) ? const QuickCommand('recall_memory', {}) : null;
+  }
+
+  // ── play ─────────────────────────────────────────────────────────────────
+  static QuickCommand? _play(String raw) {
+    final m = RegExp(
+      '$_polite'
+      r'(?:play|put on|start playing|listen to)\s+(?<q>.+?)'
+      r'(?:\s+(?:on|in|using|with|from)\s+(?<app>youtube music|yt music|youtube|spotify))?$',
+      caseSensitive: false,
+    ).firstMatch(raw.replaceAll(RegExp(r'[.!?]+$'), ''));
+    if (m == null) return null;
+    var q = m.namedGroup('q')!.trim();
+    q = q.replaceFirst(RegExp(r'^(?:some|the song|song|the video|video|a video of)\s+', caseSensitive: false), '');
+    if (q.isEmpty ||
+        RegExp(r'^(?:it|this|that|something|music)$', caseSensitive: false).hasMatch(q) ||
+        // "play a game with me", "play trivia" are for the model.
+        RegExp(r'^(?:a |an )?(?:game|quiz|trivia|riddle|round)\b|\bwith me$', caseSensitive: false).hasMatch(q)) {
+      return null;
+    }
+    final appWord = m.namedGroup('app')?.toLowerCase();
+    final app = switch (appWord) {
+      'spotify' => 'spotify',
+      'youtube music' || 'yt music' => 'youtube_music',
+      _ => 'youtube',
+    };
+    return QuickCommand('play_media', {'query': q, 'app': app}, fallThroughOnError: true);
   }
 
   /// Lower-cases, strips politeness and trailing punctuation, expands common

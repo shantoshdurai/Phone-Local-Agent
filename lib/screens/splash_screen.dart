@@ -9,7 +9,7 @@ import '../theme/app_theme.dart';
 import '../widgets/design_components.dart';
 import 'api_key_setup_screen.dart';
 import 'chat_screen.dart';
-import 'model_picker_screen.dart';
+import 'model_hub_screen.dart';
 
 /// Loads the chosen backend with visible progress, then opens the chat.
 class SplashScreen extends StatefulWidget {
@@ -94,7 +94,7 @@ class _SplashScreenState extends State<SplashScreen> {
           height: 22,
           child: CircularProgressIndicator(
             strokeWidth: 1.8,
-            color: Colors.white.withValues(alpha: 0.5),
+            color: AppTheme.muted,
           ),
         ),
         const SizedBox(height: 18),
@@ -128,7 +128,7 @@ class _SplashScreenState extends State<SplashScreen> {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        const Icon(Icons.error_outline_rounded, color: AppTheme.ink2, size: 34),
+        Icon(Icons.error_outline_rounded, color: AppTheme.ink2, size: 34),
         const SizedBox(height: 14),
         Text(
           target.isCloud ? 'Couldn\'t connect' : 'Couldn\'t load the model',
@@ -161,7 +161,7 @@ class _SplashScreenState extends State<SplashScreen> {
             context,
             target is CloudTarget
                 ? ApiKeySetupScreen(initialProvider: target.config.providerId)
-                : const ModelPickerScreen(),
+                : const ModelHubScreen(),
           ),
           label: target.isCloud ? 'Check API key & model' : 'Choose another model',
         ),

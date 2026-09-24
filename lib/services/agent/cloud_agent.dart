@@ -7,14 +7,6 @@ import '../tools/tool_runtime.dart';
 import 'agent_types.dart';
 import 'prompts.dart';
 
-/// Signature of tool execution, injectable for tests.
-typedef ToolExecutor = Future<Map<String, dynamic>> Function(
-    String name, Map<String, dynamic> args, ToolContext context);
-
-Future<Map<String, dynamic>> _runTool(
-        String name, Map<String, dynamic> args, ToolContext context) =>
-    ToolRuntime.instance.execute(name, args, context: context);
-
 /// Provider-agnostic agent loop for cloud models: stream a turn, execute any
 /// tool calls, feed results back, repeat until the model answers.
 class CloudAgent {
@@ -40,7 +32,7 @@ class CloudAgent {
     required this.config,
     ToolExecutor? executeTool,
     DateTime Function()? clock,
-  })  : _executeTool = executeTool ?? _runTool,
+  })  : _executeTool = executeTool ?? runTool,
         _clock = clock ?? DateTime.now;
 
   static final List<LlmToolDef> _tools = [
@@ -58,6 +50,9 @@ class CloudAgent {
 
   /// Records an exchange handled without the model (instant command).
   void addNote(String userText, String outcome) => _remember(userText, outcome);
+
+  /// Saved memories added to the system prompt (null when memory is off).
+  String? memory;
 
   void _remember(String user, String assistant) {
     _history.add((user, assistant));
@@ -98,7 +93,7 @@ class CloudAgent {
         LlmImage(await File(imagePath).readAsBytes(), mimeTypeForPath(imagePath)),
     ];
     final turn = <LlmMessage>[LlmMessage.user(userText, images: images)];
-    final system = cloudSystemPrompt(_clock());
+    final system = cloudSystemPrompt(_clock(), memory: memory);
 
     try {
       sink.status('Thinking…');

@@ -1,5 +1,5 @@
 import '../llm/providers.dart';
-import '../model_registry.dart';
+import '../local/local_model.dart';
 
 /// What the agent is currently running on.
 sealed class AgentTarget {
@@ -10,11 +10,11 @@ sealed class AgentTarget {
 }
 
 class LocalTarget extends AgentTarget {
-  final ModelSpec spec;
-  const LocalTarget(this.spec);
+  final LocalModel model;
+  const LocalTarget(this.model);
 
   @override
-  String get label => spec.displayName;
+  String get label => model.name;
 
   @override
   bool get isCloud => false;
@@ -124,6 +124,16 @@ String toolStatusLabel(String toolName) {
       return 'Listing apps…';
     case 'list_files':
       return 'Looking through files…';
+    case 'play_media':
+      return 'Finding it…';
+    case 'remember':
+      return 'Saving that…';
+    case 'recall_memory':
+      return 'Checking what you told me…';
+    case 'send_whatsapp':
+      return 'Opening WhatsApp…';
+    case 'send_sms':
+      return 'Opening Messages…';
     default:
       return 'Running ${toolName.replaceAll('_', ' ')}…';
   }

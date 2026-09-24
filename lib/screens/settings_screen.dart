@@ -9,9 +9,13 @@ import '../services/app_settings.dart';
 import '../services/database_service.dart';
 import '../services/utility_service.dart';
 import '../theme/app_theme.dart';
+import '../theme/theme_controller.dart';
+import '../widgets/appearance_sheet.dart';
 import '../widgets/design_components.dart';
 import 'api_key_setup_screen.dart';
-import 'model_picker_screen.dart';
+import 'memory_screen.dart';
+import 'model_hub_screen.dart';
+import 'model_settings_screen.dart';
 
 const String kRepoUrl = 'https://github.com/shantoshdurai/Phone-Local-Agent';
 const String kPrivacyUrl = '$kRepoUrl/blob/main/PRIVACY.md';
@@ -28,8 +32,8 @@ class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObse
 
   bool _confirmActions = true;
   bool _instantCommands = true;
-  bool _useGpu = false;
   bool _notificationAccess = false;
+  bool _hfToken = false;
   CloudTarget? _cloud;
   LocalTarget? _local;
   String _version = '';
@@ -57,7 +61,7 @@ class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObse
     final info = await PackageInfo.fromPlatform();
     final confirm = await AppSettings.confirmActions();
     final instant = await AppSettings.instantCommands();
-    final gpu = await AppSettings.useGpu();
+    final hfToken = await KeyStore.read('huggingface') != null;
     final notifications = await UtilityService().hasNotificationAccess();
     final cloud = await savedCloudTarget();
     final local = await savedLocalTarget();
@@ -66,7 +70,7 @@ class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObse
       _version = '${info.version} (${info.buildNumber})';
       _confirmActions = confirm;
       _instantCommands = instant;
-      _useGpu = gpu;
+      _hfToken = hfToken;
       _notificationAccess = notifications;
       _cloud = cloud;
       _local = local;
@@ -87,19 +91,55 @@ class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObse
       if (_local != null) {
         launchAgent(context, _local!);
       } else {
-        Navigator.push(context, MaterialPageRoute(builder: (_) => const ModelPickerScreen()));
+        Navigator.push(context, MaterialPageRoute(builder: (_) => const ModelHubScreen()));
       }
     }
   }
 
-  Future<void> _setGpu(bool value) async {
-    await AppSettings.setUseGpu(value);
-    setState(() => _useGpu = value);
-    final target = _agent.target;
-    if (target is LocalTarget && mounted) {
-      // Reload so the change takes effect now.
-      launchAgent(context, target);
+  Future<void> _editHfToken() async {
+    final controller = TextEditingController();
+    final result = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.surface,
+        title: Text('Hugging Face token',
+            style: GoogleFonts.interTight(color: AppTheme.ink, fontWeight: FontWeight.w600)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Only needed for gated models (you accept their license on huggingface.co first). '
+              'Create a read token at huggingface.co/settings/tokens.',
+              style: GoogleFonts.interTight(color: AppTheme.ink2, fontSize: 13, height: 1.45),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: controller,
+              obscureText: true,
+              style: GoogleFonts.jetBrainsMono(color: AppTheme.ink, fontSize: 13),
+              decoration: const InputDecoration(hintText: 'hf_…'),
+            ),
+          ],
+        ),
+        actions: [
+          if (_hfToken)
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, ''),
+              child: Text('Remove', style: TextStyle(color: AppTheme.error)),
+            ),
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.pop(ctx, controller.text.trim()), child: const Text('Save')),
+        ],
+      ),
+    );
+    if (result == null) return;
+    if (result.isEmpty) {
+      await KeyStore.delete('huggingface');
+    } else {
+      await KeyStore.write('huggingface', result);
     }
+    _load();
   }
 
   Future<void> _clearChats() async {
@@ -131,7 +171,7 @@ class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObse
     }
   }
 
-  Widget _chevron() => const Icon(Icons.chevron_right_rounded, color: AppTheme.muted, size: 22);
+  Widget _chevron() => Icon(Icons.chevron_right_rounded, color: AppTheme.muted, size: 22);
 
   @override
   Widget build(BuildContext context) {
@@ -169,21 +209,27 @@ class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObse
                   SettingsGroup(children: [
                     SettingsCell(
                       isFirst: true,
-                      title: _local?.spec.displayName ?? 'No model downloaded',
+                      title: _local?.model.name ?? 'No model downloaded',
                       subtitle: _local == null
                           ? 'Download one to use Local Agent offline'
-                          : '${_local!.spec.sizeLabel} · ${_local!.spec.tier.toLowerCase()}',
+                          : '${_local!.model.sizeLabel} · manage, download or explore models',
                       trailing: _chevron(),
                       onTap: () async {
                         await Navigator.push(
-                            context, MaterialPageRoute(builder: (_) => const ModelPickerScreen()));
+                            context, MaterialPageRoute(builder: (_) => const ModelHubScreen()));
                         _load();
                       },
                     ),
                     SettingsCell(
-                      title: 'Use GPU',
-                      subtitle: 'Faster on many flagship phones. Turn off if the model crashes or freezes.',
-                      trailing: DesignSwitch(value: _useGpu, onChanged: _setGpu),
+                      title: 'Model settings',
+                      subtitle: _agent.localModel == null
+                          ? 'Load an on-device model first'
+                          : 'Temperature, top-k, reply length, context size, threads, GPU',
+                      trailing: _chevron(),
+                      onTap: _agent.localModel == null
+                          ? null
+                          : () => Navigator.push(
+                              context, MaterialPageRoute(builder: (_) => const ModelSettingsScreen())),
                     ),
                   ]),
                   const SectionHeader('CLOUD MODEL'),
@@ -241,14 +287,39 @@ class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObse
                       onTap: () => UtilityService().requestNotificationAccess(),
                     ),
                   ]),
+                  const SectionHeader('PERSONAL'),
+                  SettingsGroup(children: [
+                    SettingsCell(
+                      isFirst: true,
+                      title: 'Memory',
+                      subtitle: 'Facts you asked the assistant to remember',
+                      trailing: _chevron(),
+                      onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const MemoryScreen())),
+                    ),
+                    SettingsCell(
+                      title: 'Appearance',
+                      subtitle: ThemeController.instance.value.name,
+                      trailing: _chevron(),
+                      onTap: () async {
+                        await showAppearanceSheet(context);
+                        if (mounted) setState(() {});
+                      },
+                    ),
+                  ]),
                   const SectionHeader('DATA'),
                   SettingsGroup(children: [
                     SettingsCell(
                       isFirst: true,
                       title: 'Delete all chats',
                       subtitle: 'Chats are stored only on this phone',
-                      trailing: const Icon(Icons.delete_outline_rounded, color: AppTheme.muted, size: 20),
+                      trailing: Icon(Icons.delete_outline_rounded, color: AppTheme.muted, size: 20),
                       onTap: _clearChats,
+                    ),
+                    SettingsCell(
+                      title: 'Hugging Face token',
+                      subtitle: _hfToken ? 'Saved (for gated models)' : 'Optional, for gated models',
+                      trailing: _chevron(),
+                      onTap: _editHfToken,
                     ),
                   ]),
                   const SectionHeader('ABOUT'),
@@ -309,7 +380,7 @@ class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObse
     required VoidCallback onTap,
   }) {
     return Material(
-      color: selected ? AppTheme.ink : Colors.transparent,
+      color: selected ? AppTheme.primary : Colors.transparent,
       borderRadius: BorderRadius.circular(8),
       child: InkWell(
         borderRadius: BorderRadius.circular(8),
@@ -319,14 +390,14 @@ class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObse
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(icon, size: 13, color: selected ? AppTheme.bg : AppTheme.ink2),
+              Icon(icon, size: 13, color: selected ? AppTheme.onPrimary : AppTheme.ink2),
               const SizedBox(width: 6),
               Text(label,
                   style: GoogleFonts.jetBrainsMono(
                     fontSize: 11,
                     fontWeight: FontWeight.w600,
                     letterSpacing: 1.2,
-                    color: selected ? AppTheme.bg : AppTheme.ink2,
+                    color: selected ? AppTheme.onPrimary : AppTheme.ink2,
                   )),
             ],
           ),

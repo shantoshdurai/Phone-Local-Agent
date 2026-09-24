@@ -10,7 +10,7 @@ import '../services/llm/llm_types.dart';
 import '../services/llm/providers.dart';
 import '../theme/app_theme.dart';
 import '../widgets/design_components.dart';
-import 'model_picker_screen.dart';
+import 'model_hub_screen.dart';
 
 /// Bring-your-own-key setup for any supported cloud provider.
 ///
@@ -46,7 +46,7 @@ class _ApiKeySetupScreenState extends State<ApiKeySetupScreen> {
   @override
   void initState() {
     super.initState();
-    _preset = providerById(widget.initialProvider ?? 'gemini');
+    _preset = providerById(widget.initialProvider ?? (hostedCloudAvailable ? 'hosted' : 'gemini'));
     _loadSaved();
   }
 
@@ -211,7 +211,7 @@ class _ApiKeySetupScreenState extends State<ApiKeySetupScreen> {
     if (Navigator.canPop(context)) {
       Navigator.pop(context);
     } else {
-      resetTo(context, const ModelPickerScreen());
+      resetTo(context, const ModelHubScreen());
     }
   }
 
@@ -249,18 +249,18 @@ class _ApiKeySetupScreenState extends State<ApiKeySetupScreen> {
                     spacing: 8,
                     runSpacing: 8,
                     children: [
-                      for (final p in kProviders)
+                      for (final p in availableProviders)
                         ChoiceChip(
                           label: Text(p.shortName),
                           selected: p.id == _preset.id,
                           onSelected: _busy ? null : (_) => _selectProvider(p),
                           labelStyle: GoogleFonts.interTight(
-                            color: p.id == _preset.id ? AppTheme.bg : AppTheme.ink,
+                            color: p.id == _preset.id ? AppTheme.onPrimary : AppTheme.ink,
                             fontWeight: FontWeight.w600,
                           ),
-                          selectedColor: AppTheme.ink,
+                          selectedColor: AppTheme.primary,
                           backgroundColor: AppTheme.surface,
-                          side: const BorderSide(color: AppTheme.border),
+                          side: BorderSide(color: AppTheme.border),
                           showCheckmark: false,
                         ),
                     ],
@@ -289,71 +289,83 @@ class _ApiKeySetupScreenState extends State<ApiKeySetupScreen> {
                     ),
                     const SizedBox(height: 18),
                   ],
-                  Row(
-                    children: [
-                      Eyebrow(_preset.keyRequired ? 'API KEY' : 'API KEY (OPTIONAL)'),
-                      const Spacer(),
-                      if (_preset.keyUrl.isNotEmpty)
-                        TextButton.icon(
-                          onPressed: () => launchUrl(Uri.parse(_preset.keyUrl), mode: LaunchMode.externalApplication),
-                          icon: const Icon(Icons.open_in_new_rounded, size: 14, color: AppTheme.ink2),
-                          label: Text('Get a key',
-                              style: GoogleFonts.interTight(color: AppTheme.ink2, fontSize: 12.5)),
-                        ),
-                    ],
-                  ),
-                  TextField(
-                    controller: _keyCtrl,
-                    enabled: !_busy,
-                    obscureText: _obscure,
-                    autocorrect: false,
-                    enableSuggestions: false,
-                    style: GoogleFonts.jetBrainsMono(color: AppTheme.ink, fontSize: 13),
-                    onChanged: (_) => setState(() {
-                      _error = null;
-                      _models = null;
-                    }),
-                    decoration: InputDecoration(
-                      hintText: _savedKeyMasked ?? _preset.keyHint,
-                      suffixIcon: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          IconButton(
-                            tooltip: 'Paste',
-                            icon: const Icon(Icons.content_paste_rounded, size: 18, color: AppTheme.muted),
-                            onPressed: _busy ? null : _paste,
+                  if (_preset.kind == ProviderKind.hosted)
+                    Text(
+                      'Nothing to set up: messages go through the app\'s own server to Google Gemini. '
+                      'Fair-use limits apply. For unlimited use or other models, add your own key.',
+                      style: GoogleFonts.interTight(fontSize: 12.5, height: 1.45, color: AppTheme.ink2),
+                    )
+                  else ...[
+                    Row(
+                      children: [
+                        Eyebrow(_preset.keyRequired ? 'API KEY' : 'API KEY (OPTIONAL)'),
+                        const Spacer(),
+                        if (_preset.keyUrl.isNotEmpty)
+                          TextButton.icon(
+                            onPressed: () => launchUrl(Uri.parse(_preset.keyUrl), mode: LaunchMode.externalApplication),
+                            icon: Icon(Icons.open_in_new_rounded, size: 14, color: AppTheme.ink2),
+                            label: Text('Get a key',
+                                style: GoogleFonts.interTight(color: AppTheme.ink2, fontSize: 12.5)),
                           ),
-                          IconButton(
-                            tooltip: _obscure ? 'Show' : 'Hide',
-                            icon: Icon(_obscure ? Icons.visibility_outlined : Icons.visibility_off_outlined,
-                                size: 18, color: AppTheme.muted),
-                            onPressed: () => setState(() => _obscure = !_obscure),
+                      ],
+                    ),
+                    TextField(
+                      controller: _keyCtrl,
+                      enabled: !_busy,
+                      obscureText: _obscure,
+                      autocorrect: false,
+                      enableSuggestions: false,
+                      style: GoogleFonts.jetBrainsMono(color: AppTheme.ink, fontSize: 13),
+                      onChanged: (_) => setState(() {
+                        _error = null;
+                        _models = null;
+                      }),
+                      decoration: InputDecoration(
+                        hintText: _savedKeyMasked ?? _preset.keyHint,
+                        suffixIcon: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            IconButton(
+                              tooltip: 'Paste',
+                              icon: Icon(Icons.content_paste_rounded, size: 18, color: AppTheme.muted),
+                              onPressed: _busy ? null : _paste,
+                            ),
+                            IconButton(
+                              tooltip: _obscure ? 'Show' : 'Hide',
+                              icon: Icon(_obscure ? Icons.visibility_outlined : Icons.visibility_off_outlined,
+                                  size: 18, color: AppTheme.muted),
+                              onPressed: () => setState(() => _obscure = !_obscure),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    if (_savedKeyMasked != null) ...[
+                      const SizedBox(height: 6),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text('A key is saved on this phone. Leave the field empty to keep it.',
+                                style: GoogleFonts.interTight(fontSize: 11.5, color: AppTheme.muted)),
+                          ),
+                          TextButton(
+                            onPressed: _busy ? null : _removeKey,
+                            child: Text('Remove',
+                                style: GoogleFonts.interTight(color: AppTheme.error, fontSize: 12)),
                           ),
                         ],
                       ),
-                    ),
-                  ),
-                  if (_savedKeyMasked != null) ...[
-                    const SizedBox(height: 6),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text('A key is saved on this phone. Leave the field empty to keep it.',
-                              style: GoogleFonts.interTight(fontSize: 11.5, color: AppTheme.muted)),
-                        ),
-                        TextButton(
-                          onPressed: _busy ? null : _removeKey,
-                          child: Text('Remove',
-                              style: GoogleFonts.interTight(color: AppTheme.error, fontSize: 12)),
-                        ),
-                      ],
-                    ),
+                    ],
                   ],
                   if (_error != null) ...[const SizedBox(height: 14), _banner(_error!, isError: true)],
                   if (_notice != null && _error == null) ...[const SizedBox(height: 14), _banner(_notice!)],
                   const SizedBox(height: 18),
                   if (_models == null)
-                    PrimaryButton(onPressed: _busy ? null : _verify, label: 'Verify key', isLoading: _busy)
+                    PrimaryButton(
+                      onPressed: _busy ? null : _verify,
+                      label: _preset.kind == ProviderKind.hosted ? 'Connect' : 'Verify key',
+                      isLoading: _busy,
+                    )
                   else ...[
                     const Eyebrow('MODEL'),
                     const SizedBox(height: 8),

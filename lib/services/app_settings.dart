@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -19,7 +20,6 @@ class AppSettings {
   static const _kCloudConfig = 'cloud_config_v2';
   static const _kConfirmActions = 'confirm_actions_v1';
   static const _kInstantCommands = 'instant_commands_v1';
-  static const _kUseGpu = 'local_use_gpu_v1';
 
   static Future<SharedPreferences> get _prefs => SharedPreferences.getInstance();
 
@@ -79,11 +79,20 @@ class AppSettings {
   static Future<void> setInstantCommands(bool value) async =>
       (await _prefs).setBool(_kInstantCommands, value);
 
-  /// Run local models on the GPU instead of the CPU.
-  static Future<bool> useGpu() async => (await _prefs).getBool(_kUseGpu) ?? false;
+  static const _kInstallId = 'install_id_v1';
 
-  static Future<void> setUseGpu(bool value) async =>
-      (await _prefs).setBool(_kUseGpu, value);
+  /// Random per-install id, used only by the Free cloud proxy for fair-use
+  /// limits. Not derived from the device and reset by reinstalling.
+  static Future<String> installId() async {
+    final prefs = await _prefs;
+    var id = prefs.getString(_kInstallId);
+    if (id == null) {
+      final r = Random.secure();
+      id = List.generate(16, (_) => r.nextInt(256).toRadixString(16).padLeft(2, '0')).join();
+      await prefs.setString(_kInstallId, id);
+    }
+    return id;
+  }
 }
 
 /// API keys, encrypted at rest with an Android Keystore-backed key.

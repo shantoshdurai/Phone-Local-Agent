@@ -4,15 +4,12 @@ import 'package:flutter/services.dart';
 import 'app/launch.dart';
 import 'services/app_settings.dart';
 import 'theme/app_theme.dart';
+import 'theme/theme_controller.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
-    statusBarColor: Colors.transparent,
-    statusBarIconBrightness: Brightness.light,
-    systemNavigationBarColor: Colors.black,
-    systemNavigationBarIconBrightness: Brightness.light,
-  ));
+  await ThemeController.instance.load();
+  SystemChrome.setSystemUIOverlayStyle(AppTheme.overlayStyle);
   // Only cheap work here: pick the first screen. Model loading happens on
   // the splash screen with visible progress.
   await KeyStore.migrateLegacyKeys();
@@ -26,11 +23,14 @@ class LocalAgentApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Local Agent',
-      debugShowCheckedModeBanner: false,
-      theme: AppTheme.darkTheme,
-      home: screenFor(start),
+    return ValueListenableBuilder<AppPalette>(
+      valueListenable: ThemeController.instance,
+      builder: (context, palette, _) => MaterialApp(
+        title: 'Local Agent',
+        debugShowCheckedModeBanner: false,
+        theme: AppTheme.theme,
+        home: screenFor(start),
+      ),
     );
   }
 }

@@ -67,7 +67,7 @@ void main() {
   });
 
   group('search chain', () {
-    test('falls through to Bing when DuckDuckGo is blocked', () async {
+    test('uses Bing when DuckDuckGo is blocked', () async {
       final seen = <Uri>[];
       final service = SearchService(
         clientFactory: fakeNetwork({
@@ -76,10 +76,11 @@ void main() {
         }, seen),
       );
       final result = await service.searchWeb('iphone');
-      expect(result['source'], 'Bing');
+      expect(result['sources'], ['Bing']);
       expect((result['results'] as List).length, 3);
-      expect(seen.map((u) => u.host), ['html.duckduckgo.com', 'www.bing.com']);
-      expect(seen.last.queryParameters['q'], 'iphone');
+      // Both engines and Google News are asked at once.
+      expect(seen.map((u) => u.host).toSet(), {'html.duckduckgo.com', 'www.bing.com', 'news.google.com'});
+      expect(seen.firstWhere((u) => u.host == 'www.bing.com').queryParameters['q'], 'iphone');
     });
 
     test('says so honestly when every source fails', () async {

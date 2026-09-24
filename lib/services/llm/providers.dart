@@ -4,7 +4,35 @@ import 'http_stream.dart';
 import 'llm_types.dart';
 import 'openai_client.dart';
 
-enum ProviderKind { gemini, openai, anthropic, groq, openrouter, custom }
+enum ProviderKind { hosted, gemini, openai, anthropic, groq, openrouter, custom }
+
+/// The developer-run proxy behind "Free cloud" (see proxy/README.md). Set at
+/// build time: flutter build appbundle --dart-define=HOSTED_API_URL=https://…
+/// Without it the option doesn't appear.
+const String kHostedApiUrl = String.fromEnvironment('HOSTED_API_URL');
+
+/// Identifies this app to the proxy. Not a secret (anything in an APK can
+/// be extracted); the proxy's per-install rate limits are the protection.
+const String kHostedAppToken = String.fromEnvironment('HOSTED_APP_TOKEN', defaultValue: 'local-agent-app');
+
+bool get hostedCloudAvailable => kHostedApiUrl.isNotEmpty;
+
+/// Free cloud: Gemini through the developer's proxy, so users need no key.
+const ProviderPreset kHostedPreset = ProviderPreset(
+  kind: ProviderKind.hosted,
+  id: 'hosted',
+  name: 'Free cloud',
+  shortName: 'Free cloud',
+  tagline: 'No key needed. Runs on Google Gemini with fair-use limits.',
+  baseUrl: kHostedApiUrl,
+  keyUrl: '',
+  keyHint: '',
+  keyRequired: false,
+  preferredModels: ['gemini-flash-lite-latest', 'gemini-flash-latest'],
+);
+
+/// Providers to show, with Free cloud first when this build has it.
+List<ProviderPreset> get availableProviders => [if (hostedCloudAvailable) kHostedPreset, ...kProviders];
 
 /// Static description of a cloud provider the user can bring a key for.
 class ProviderPreset {
@@ -116,8 +144,9 @@ const List<ProviderPreset> kProviders = [
   ),
 ];
 
-ProviderPreset providerById(String id) =>
-    kProviders.firstWhere((p) => p.id == id, orElse: () => kProviders.first);
+ProviderPreset providerById(String id) => id == kHostedPreset.id
+    ? kHostedPreset
+    : kProviders.firstWhere((p) => p.id == id, orElse: () => kProviders.first);
 
 /// The user's saved cloud choice (never contains the key — keys live in
 /// secure storage, see [KeyStore]).
@@ -191,9 +220,18 @@ LlmClient createLlmClient({
   required String apiKey,
   String? baseUrl,
   CloudConfig? config,
+  String? installId,
   HttpClientFactory? httpClientFactory,
 }) {
   switch (preset.kind) {
+    case ProviderKind.hosted:
+      // The proxy speaks the Gemini API and swaps in the real key.
+      return GeminiClient(
+        apiKey: kHostedAppToken,
+        baseUrl: '${preset.baseUrl.replaceAll(RegExp(r'/+$'), '')}/v1beta',
+        extraHeaders: {if (installId != null) 'x-install-id': installId},
+        httpClientFactory: httpClientFactory,
+      );
     case ProviderKind.gemini:
       return GeminiClient(apiKey: apiKey, httpClientFactory: httpClientFactory);
     case ProviderKind.anthropic:

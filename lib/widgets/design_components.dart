@@ -139,8 +139,8 @@ class PrimaryButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final enabled = onPressed != null && !isLoading && !disabled;
-    final bg = background ?? AppTheme.ink;
-    final fg = foreground ?? AppTheme.bg;
+    final bg = background ?? AppTheme.primary;
+    final fg = foreground ?? AppTheme.onPrimary;
     return SizedBox(
       width: double.infinity,
       child: Material(
@@ -197,7 +197,7 @@ class SecondaryButton extends StatelessWidget {
         color: Colors.transparent,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(12),
-          side: const BorderSide(color: AppTheme.border),
+          side: BorderSide(color: AppTheme.border),
         ),
         child: InkWell(
           borderRadius: BorderRadius.circular(12),
@@ -237,8 +237,8 @@ class Pill extends StatelessWidget {
     Border? border;
     switch (style) {
       case PillStyle.solid:
-        bg = AppTheme.ink;
-        fg = AppTheme.bg;
+        bg = AppTheme.primary;
+        fg = AppTheme.onPrimary;
         break;
       case PillStyle.outline:
         bg = Colors.transparent;
@@ -298,7 +298,7 @@ class DesignCard extends StatelessWidget {
         color: selected ? AppTheme.surface2 : AppTheme.surface,
         borderRadius: BorderRadius.circular(radius),
         border: Border.all(
-          color: selected ? AppTheme.ink : AppTheme.border,
+          color: selected ? AppTheme.primary : AppTheme.border,
           width: selected ? 1.5 : 1,
         ),
       ),
@@ -340,7 +340,7 @@ class AppHeader extends StatelessWidget implements PreferredSizeWidget {
       padding: const EdgeInsets.symmetric(horizontal: 16),
       decoration: BoxDecoration(
         color: AppTheme.bg,
-        border: divider ? const Border(bottom: BorderSide(color: AppTheme.border)) : null,
+        border: divider ? Border(bottom: BorderSide(color: AppTheme.border)) : null,
       ),
       child: Row(
         children: [
@@ -392,7 +392,7 @@ class DesignSwitch extends StatelessWidget {
         width: 38,
         height: 22,
         decoration: BoxDecoration(
-          color: value ? AppTheme.ink : AppTheme.border2,
+          color: value ? AppTheme.primary : AppTheme.border2,
           borderRadius: BorderRadius.circular(999),
         ),
         child: AnimatedAlign(
@@ -404,7 +404,7 @@ class DesignSwitch extends StatelessWidget {
               width: 18,
               height: 18,
               decoration: BoxDecoration(
-                color: value ? AppTheme.bg : Colors.white,
+                color: value ? AppTheme.onPrimary : Colors.white,
                 shape: BoxShape.circle,
               ),
             ),
@@ -455,7 +455,7 @@ class SettingsCell extends StatelessWidget {
     );
     final decorated = Container(
       decoration: BoxDecoration(
-        border: isFirst ? null : const Border(top: BorderSide(color: AppTheme.border)),
+        border: isFirst ? null : Border(top: BorderSide(color: AppTheme.border)),
       ),
       child: row,
     );

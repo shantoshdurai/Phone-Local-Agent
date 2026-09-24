@@ -21,6 +21,7 @@ class GeminiClient implements LlmClient {
 
   final String apiKey;
   final String baseUrl;
+  final Map<String, String> extraHeaders;
   final HttpClientFactory _httpFactory;
 
   /// Set once a model rejects `thinkingConfig`, so later turns skip it.
@@ -29,6 +30,7 @@ class GeminiClient implements LlmClient {
   GeminiClient({
     required this.apiKey,
     String? baseUrl,
+    this.extraHeaders = const {},
     HttpClientFactory? httpClientFactory,
   })  : baseUrl = _trimSlash(baseUrl ?? defaultBaseUrl),
         _httpFactory = httpClientFactory ?? defaultHttpClientFactory;
@@ -153,6 +155,7 @@ class GeminiClient implements LlmClient {
   }
 
   Map<String, String> get _headers => {
+        ...extraHeaders,
         'content-type': 'application/json',
         'x-goog-api-key': apiKey,
       };

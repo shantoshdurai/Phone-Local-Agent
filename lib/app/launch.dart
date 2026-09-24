@@ -2,14 +2,12 @@ import 'package:flutter/material.dart';
 
 import '../screens/api_key_setup_screen.dart';
 import '../screens/intro_screen.dart';
-import '../screens/model_picker_screen.dart';
+import '../screens/model_hub_screen.dart';
 import '../screens/splash_screen.dart';
 import '../services/agent/agent_types.dart';
 import '../services/app_settings.dart';
-import '../services/device_service.dart';
 import '../services/llm/providers.dart';
-import '../services/model_downloader_service.dart';
-import '../services/model_registry.dart';
+import '../services/local/model_catalog.dart';
 
 /// Central navigation: where the app starts and how every screen switches
 /// backends. All "start chatting on X" paths go through [launchAgent], so a
@@ -64,28 +62,20 @@ Future<CloudTarget?> savedCloudTarget() async {
   return CloudTarget(config);
 }
 
-/// The last-used downloaded model, else any downloaded model this device can
-/// run.
+/// The last-used downloaded model, else any downloaded model.
 Future<LocalTarget?> savedLocalTarget() async {
-  final downloader = ModelDownloaderService();
-  final arm64 = await DeviceService().isArm64();
-  bool usable(ModelSpec s) => arm64 || !s.arm64Only;
-
-  final last = ModelRegistry.byFileName(await AppSettings.lastLocalModel());
-  if (last != null && usable(last) && await downloader.isModelDownloaded(last.fileName)) {
-    return LocalTarget(last);
+  final downloaded = await ModelCatalog.downloaded();
+  if (downloaded.isEmpty) return null;
+  final lastId = await AppSettings.lastLocalModel();
+  for (final m in downloaded) {
+    if (m.id == lastId) return LocalTarget(m);
   }
-  for (final spec in ModelRegistry.all) {
-    if (usable(spec) && await downloader.isModelDownloaded(spec.fileName)) {
-      return LocalTarget(spec);
-    }
-  }
-  return null;
+  return LocalTarget(downloaded.first);
 }
 
 Widget screenFor(StartDestination destination) => switch (destination) {
       StartOnboarding() => const IntroScreen(),
-      StartModelPicker() => const ModelPickerScreen(),
+      StartModelPicker() => const ModelHubScreen(),
       StartCloudSetup() => const ApiKeySetupScreen(),
       StartAgent(:final target) => SplashScreen(target: target),
     };

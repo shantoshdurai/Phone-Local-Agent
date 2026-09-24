@@ -6,7 +6,7 @@ import '../services/app_settings.dart';
 import '../theme/app_theme.dart';
 import '../widgets/design_components.dart';
 import 'api_key_setup_screen.dart';
-import 'model_picker_screen.dart';
+import 'model_hub_screen.dart';
 
 /// 03 · Where should the agent run — step 2 of 2.
 class ModeSelectionScreen extends StatefulWidget {
@@ -31,7 +31,7 @@ class _ModeSelectionScreenState extends State<ModeSelectionScreen> {
     // downloader with no way into a chat).
     resetTo(
       context,
-      _selected == AgentMode.cloud ? const ApiKeySetupScreen() : const ModelPickerScreen(),
+      _selected == AgentMode.cloud ? const ApiKeySetupScreen() : const ModelHubScreen(),
     );
   }
 
@@ -140,7 +140,7 @@ class _ModeSelectionScreenState extends State<ModeSelectionScreen> {
                     margin: const EdgeInsets.only(top: 8, right: 10),
                     width: 4,
                     height: 4,
-                    decoration: const BoxDecoration(color: AppTheme.muted, shape: BoxShape.circle),
+                    decoration: BoxDecoration(color: AppTheme.muted, shape: BoxShape.circle),
                   ),
                   Expanded(
                     child: RichText(
@@ -179,7 +179,7 @@ class _ModeSelectionScreenState extends State<ModeSelectionScreen> {
               child: Container(
                 width: 8,
                 height: 8,
-                decoration: const BoxDecoration(color: AppTheme.bg, shape: BoxShape.circle),
+                decoration: BoxDecoration(color: AppTheme.bg, shape: BoxShape.circle),
               ),
             )
           : null,

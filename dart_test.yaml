@@ -1,0 +1,4 @@
+tags:
+  # Needs a real GGUF model; see test/local_agent_e2e_test.dart.
+  model:
+    timeout: 10x

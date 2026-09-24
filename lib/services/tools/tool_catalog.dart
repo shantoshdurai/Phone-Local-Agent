@@ -114,6 +114,28 @@ const List<ToolSpec> kToolCatalog = [
     tier: ToolTier.core,
   ),
 
+  ToolSpec(
+    name: 'play_media',
+    description:
+        'Play a song, video, artist or playlist. app: "youtube" (default) opens '
+        'the top video in the YouTube app; "spotify" or "youtube_music" start '
+        'playing in that app.',
+    localDescription: 'Play music or a video (YouTube, Spotify, YouTube Music).',
+    parameters: {
+      'type': 'object',
+      'properties': {
+        'query': {'type': 'string', 'description': 'What to play.'},
+        'app': {
+          'type': 'string',
+          'enum': ['youtube', 'youtube_music', 'spotify'],
+          'description': 'Which app. Optional.',
+        },
+      },
+      'required': ['query'],
+    },
+    tier: ToolTier.core,
+  ),
+
   // ── common ──────────────────────────────────────────────────────────────
   ToolSpec(
     name: 'toggle_flashlight',
@@ -265,13 +287,12 @@ const List<ToolSpec> kToolCatalog = [
     tier: ToolTier.common,
   ),
 
-  // ── niche ───────────────────────────────────────────────────────────────
   ToolSpec(
     name: 'send_whatsapp',
     description:
         'Open WhatsApp with a message ready to send to a number; the user '
-        'presses send. The number must come from search_contacts or the user, '
-        'in international format like +919876543210.',
+        'presses send. Get the number with search_contacts first when the user '
+        'names a person; never make a number up.',
     localDescription: 'Open WhatsApp with a message to a number.',
     parameters: {
       'type': 'object',
@@ -281,9 +302,59 @@ const List<ToolSpec> kToolCatalog = [
       },
       'required': ['phone', 'message'],
     },
-    tier: ToolTier.niche,
+    tier: ToolTier.common,
     sensitive: true,
   ),
+  ToolSpec(
+    name: 'send_sms',
+    description:
+        'Open the SMS app with a text message ready to send to a number; the '
+        'user presses send. Get the number with search_contacts first when the '
+        'user names a person; never make a number up.',
+    localDescription: 'Open the SMS app with a message to a number.',
+    parameters: {
+      'type': 'object',
+      'properties': {
+        'phone': {'type': 'string', 'description': 'Phone number.'},
+        'message': {'type': 'string'},
+      },
+      'required': ['phone', 'message'],
+    },
+    tier: ToolTier.common,
+    sensitive: true,
+  ),
+  ToolSpec(
+    name: 'remember',
+    description:
+        'Save a fact the user wants you to remember across chats (a name, a '
+        'preference, a date). Only when the user asks you to remember '
+        'something.',
+    localDescription: 'Save a fact the user asked you to remember.',
+    parameters: {
+      'type': 'object',
+      'properties': {
+        'fact': {'type': 'string', 'description': 'The fact, as a short sentence.'},
+      },
+      'required': ['fact'],
+    },
+    tier: ToolTier.common,
+  ),
+  ToolSpec(
+    name: 'recall_memory',
+    description:
+        'Look up facts the user asked you to remember earlier. Call it when '
+        'the user asks about something personal you might have saved.',
+    localDescription: 'Look up facts the user asked you to remember.',
+    parameters: {
+      'type': 'object',
+      'properties': {
+        'query': {'type': 'string', 'description': 'What to look for. Optional.'},
+      },
+    },
+    tier: ToolTier.common,
+  ),
+
+  // ── niche ───────────────────────────────────────────────────────────────
   ToolSpec(
     name: 'schedule_event',
     description:
@@ -385,16 +456,56 @@ final Map<String, ToolSpec> kToolsByName = {
 
 const List<ToolTier> _tierOrder = [ToolTier.core, ToolTier.common, ToolTier.niche];
 
+/// Order in which common tools fill a limited budget: the actions people ask
+/// a phone assistant for most, and that the instant router can't always
+/// resolve on its own (messages need a contact lookup first).
+const List<String> _commonPriority = [
+  'search_contacts',
+  'send_whatsapp',
+  'send_sms',
+  'make_phone_call',
+  'set_timer',
+  'set_alarm',
+  'toggle_flashlight',
+  'remember',
+  'recall_memory',
+  'set_volume',
+  'open_url',
+  'read_notifications',
+  'check_connectivity',
+  'vibrate',
+  'copy_to_clipboard',
+  'read_clipboard',
+];
+
+/// Tools for small models that only get lookups (see ToolUse.lookups).
+const List<String> kLookupTools = [
+  'search_web',
+  'get_weather',
+  'get_date_time',
+  'get_device_info',
+  'recall_memory',
+];
+
+int _rank(ToolSpec t) {
+  final i = _commonPriority.indexOf(t.name);
+  return i < 0 ? _commonPriority.length : i;
+}
+
 /// The subset of tools to expose to a model with a [budget]-tool limit.
-/// Core tools are always included; common then niche fill the remainder in
-/// catalog order, so the model's tool list is stable across sessions.
+/// Core tools are always included; common (by priority) then niche fill the
+/// remainder, so the model's tool list is stable across sessions.
 List<ToolSpec> selectToolsForBudget(int budget) {
   final out = <ToolSpec>[];
   for (final tier in _tierOrder) {
-    for (final t in kToolCatalog.where((t) => t.tier == tier)) {
+    final tools = kToolCatalog.where((t) => t.tier == tier).toList();
+    if (tier == ToolTier.common) tools.sort((a, b) => _rank(a).compareTo(_rank(b)));
+    for (final t in tools) {
       if (tier != ToolTier.core && out.length >= budget) return out;
       out.add(t);
     }
   }
   return out;
 }
+
+List<ToolSpec> lookupTools() => [for (final n in kLookupTools) kToolsByName[n]!];

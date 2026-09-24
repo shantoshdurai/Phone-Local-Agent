@@ -110,4 +110,19 @@ class PersonalService {
       return false;
     }
   }
+
+  /// Opens the default SMS app with the message filled in; the user presses
+  /// send. (Sending silently needs SEND_SMS, which Play only grants to
+  /// default SMS apps.)
+  Future<bool> sendSms(String phone, String message) async {
+    final clean = phone.replaceAll(RegExp(r'[^0-9+]'), '');
+    if (clean.replaceAll('+', '').length < 3) return false;
+    try {
+      // Uri(queryParameters:) encodes spaces as "+", which some messaging
+      // apps show literally.
+      return await launchUrl(Uri.parse('sms:$clean?body=${Uri.encodeComponent(message)}'));
+    } catch (_) {
+      return false;
+    }
+  }
 }

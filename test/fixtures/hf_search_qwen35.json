@@ -1,0 +1,252 @@
+[
+{
+"_id": "6a5c53b3dd4adc6511a71e1b",
+"id": "DavidAU/Qwen3.5-9B-The-Defiant-Fable-Uncensored-Heretic-NEO-IMATRIX-MAX-MTP-GGUF",
+"gated": false,
+"likes": 796,
+"downloads": 1641770,
+"tags": [
+"gguf",
+"MTP GGUFS",
+"Regular GGUFS",
+"NEO Imatrix",
+"fine tune",
+"unsloth",
+"heretic",
+"uncensored",
+"abliterated",
+"multi-stage tuned.",
+"all use cases",
+"thinking"
+],
+"pipeline_tag": "image-text-to-text",
+"createdAt": "2026-07-19T04:33:55.000Z"
+},
+{
+"_id": "69a2f5edef408247323ee7f4",
+"id": "unsloth/Qwen3.5-9B-GGUF",
+"gated": false,
+"likes": 934,
+"downloads": 1461669,
+"tags": [
+"transformers",
+"gguf",
+"unsloth",
+"image-text-to-text",
+"base_model:Qwen/Qwen3.5-9B",
+"base_model:quantized:Qwen/Qwen3.5-9B",
+"license:apache-2.0",
+"endpoints_compatible",
+"region:us",
+"conversational"
+],
+"pipeline_tag": "image-text-to-text",
+"createdAt": "2026-02-28T14:04:29.000Z"
+},
+{
+"_id": "69a52438a50ce97141e4a0eb",
+"id": "unsloth/Qwen3.5-4B-GGUF",
+"gated": false,
+"likes": 437,
+"downloads": 911070,
+"tags": [
+"transformers",
+"gguf",
+"unsloth",
+"image-text-to-text",
+"base_model:Qwen/Qwen3.5-4B",
+"base_model:quantized:Qwen/Qwen3.5-4B",
+"license:apache-2.0",
+"endpoints_compatible",
+"region:us",
+"conversational"
+],
+"pipeline_tag": "image-text-to-text",
+"createdAt": "2026-03-02T05:46:32.000Z"
+},
+{
+"_id": "69a77bbf40a682fb162ab03e",
+"id": "HauhauCS/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive",
+"gated": false,
+"likes": 2126,
+"downloads": 717460,
+"tags": [
+"gguf",
+"uncensored",
+"qwen3.5",
+"qwen",
+"en",
+"zh",
+"multilingual",
+"base_model:Qwen/Qwen3.5-9B",
+"base_model:quantized:Qwen/Qwen3.5-9B",
+"license:apache-2.0",
+"endpoints_compatible",
+"region:us"
+],
+"createdAt": "2026-03-04T00:24:31.000Z"
+},
+{
+"_id": "69a591f64814fea218e241cc",
+"id": "lmstudio-community/Qwen3.5-9B-GGUF",
+"gated": false,
+"likes": 65,
+"downloads": 517528,
+"tags": [
+"gguf",
+"base_model:Qwen/Qwen3.5-9B",
+"base_model:quantized:Qwen/Qwen3.5-9B",
+"license:apache-2.0",
+"endpoints_compatible",
+"region:us",
+"conversational"
+],
+"createdAt": "2026-03-02T13:34:46.000Z"
+},
+{
+"_id": "69f22df4e0c88c9638262e75",
+"id": "Jackrong/Qwen3.5-9B-DeepSeek-V4-Flash-GGUF",
+"gated": false,
+"likes": 324,
+"downloads": 362688,
+"tags": [
+"transformers",
+"gguf",
+"text-generation-inference",
+"unsloth",
+"qwen3_5",
+"reasoning",
+"distillation",
+"deepseek",
+"deepseek-v4",
+"sft",
+"long-cot",
+"chain-of-thought"
+],
+"pipeline_tag": "image-text-to-text",
+"createdAt": "2026-04-29T16:12:36.000Z"
+},
+{
+"_id": "699dba9be22ce68effc846dc",
+"id": "unsloth/Qwen3.5-27B-GGUF",
+"gated": false,
+"likes": 504,
+"downloads": 340654,
+"tags": [
+"gguf",
+"unsloth",
+"image-text-to-text",
+"base_model:Qwen/Qwen3.5-27B",
+"base_model:quantized:Qwen/Qwen3.5-27B",
+"license:apache-2.0",
+"endpoints_compatible",
+"region:us",
+"imatrix",
+"conversational"
+],
+"pipeline_tag": "image-text-to-text",
+"createdAt": "2026-02-24T14:50:03.000Z"
+},
+{
+"_id": "69a2f5f8ef408247323ee8f4",
+"id": "unsloth/Qwen3.5-2B-GGUF",
+"gated": false,
+"likes": 157,
+"downloads": 319752,
+"tags": [
+"transformers",
+"gguf",
+"unsloth",
+"image-text-to-text",
+"base_model:Qwen/Qwen3.5-2B",
+"base_model:quantized:Qwen/Qwen3.5-2B",
+"license:apache-2.0",
+"endpoints_compatible",
+"region:us",
+"conversational"
+],
+"pipeline_tag": "image-text-to-text",
+"createdAt": "2026-02-28T14:04:40.000Z"
+},
+{
+"_id": "69a1bc1e089f30872f5c47d0",
+"id": "bartowski/Qwen_Qwen3.5-4B-GGUF",
+"gated": false,
+"likes": 59,
+"downloads": 317075,
+"tags": [
+"gguf",
+"image-text-to-text",
+"base_model:Qwen/Qwen3.5-4B",
+"base_model:quantized:Qwen/Qwen3.5-4B",
+"license:apache-2.0",
+"endpoints_compatible",
+"region:us",
+"conversational"
+],
+"pipeline_tag": "image-text-to-text",
+"createdAt": "2026-02-27T15:45:34.000Z"
+},
+{
+"_id": "699dba89dc51de1253ffca67",
+"id": "unsloth/Qwen3.5-122B-A10B-GGUF",
+"gated": false,
+"likes": 297,
+"downloads": 307977,
+"tags": [
+"transformers",
+"gguf",
+"qwen3_5_moe",
+"image-text-to-text",
+"unsloth",
+"base_model:Qwen/Qwen3.5-122B-A10B",
+"base_model:quantized:Qwen/Qwen3.5-122B-A10B",
+"license:apache-2.0",
+"endpoints_compatible",
+"region:us",
+"imatrix",
+"conversational"
+],
+"pipeline_tag": "image-text-to-text",
+"createdAt": "2026-02-24T14:49:45.000Z"
+},
+{
+"_id": "699dd5c5ebf9b332d4f20063",
+"id": "bartowski/Qwen_Qwen3.5-35B-A3B-GGUF",
+"gated": false,
+"likes": 70,
+"downloads": 302183,
+"tags": [
+"gguf",
+"image-text-to-text",
+"base_model:Qwen/Qwen3.5-35B-A3B",
+"base_model:quantized:Qwen/Qwen3.5-35B-A3B",
+"license:apache-2.0",
+"endpoints_compatible",
+"region:us",
+"imatrix",
+"conversational"
+],
+"pipeline_tag": "image-text-to-text",
+"createdAt": "2026-02-24T16:45:57.000Z"
+},
+{
+"_id": "69a45c8b63d82db3001abd63",
+"id": "bartowski/Qwen_Qwen3.5-2B-GGUF",
+"gated": false,
+"likes": 25,
+"downloads": 282532,
+"tags": [
+"gguf",
+"image-text-to-text",
+"base_model:Qwen/Qwen3.5-2B",
+"base_model:quantized:Qwen/Qwen3.5-2B",
+"license:apache-2.0",
+"endpoints_compatible",
+"region:us",
+"conversational"
+],
+"pipeline_tag": "image-text-to-text",
+"createdAt": "2026-03-01T15:34:35.000Z"
+}
+]

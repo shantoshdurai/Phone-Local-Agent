@@ -43,7 +43,9 @@ dependencies:
   sqflite: ^2.4.1
   path: ^1.9.0
   shared_preferences: ^2.5.3
-  flutter_gemma: ^0.15.1
+  # On-device inference: llama.cpp (GGUF) through FFI, including vision
+  # projectors and native tool-call parsing.
+  llamadart: 0.8.24
   disk_space_2: ^1.0.12
   installed_apps: ^2.1.1
   url_launcher: ^6.3.1
@@ -120,3 +122,27 @@ flutter:
   #
   # For details regarding fonts from package dependencies,
   # see https://flutter.dev/to/font-from-package
+
+# Native runtimes that llamadart's build hook bundles. Only llama.cpp
+# (GGUF) is shipped; each CPU variant is ~9 MB, so Android arm64 gets the
+# baseline plus the two feature levels phones actually have (dotprod+fp16,
+# and i8mm), and OpenCL for Adreno GPUs. Vulkan (42 MB) is left out: on
+# phone GPUs it is usually slower than the CPU path.
+hooks:
+  user_defines:
+    llamadart:
+      llamadart_native_runtimes:
+        platforms:
+          android-arm64: [llama_cpp]
+          android-x64: [llama_cpp]
+          linux-x64: [llama_cpp]
+          macos-arm64: [llama_cpp]
+          windows-x64: [llama_cpp]
+      llamadart_native_backends:
+        platforms:
+          android-arm64:
+            backends: [cpu, opencl]
+            cpu_variants: [android_armv8.0_1, android_armv8.2_2, android_armv8.6_1]
+          android-x64: [cpu]
+          linux-x64: [cpu]
+          windows-x64: [cpu]

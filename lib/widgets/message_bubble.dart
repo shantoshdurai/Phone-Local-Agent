@@ -129,7 +129,7 @@ class _MessageBubbleState extends State<MessageBubble>
         Padding(
           padding: const EdgeInsets.only(right: 12, top: 2),
           child: message.isError
-              ? const Icon(Icons.error_outline_rounded, size: 20, color: AppTheme.ink2)
+              ? Icon(Icons.error_outline_rounded, size: 20, color: AppTheme.ink2)
               : const SparkleIcon(size: 20),
         ),
         Expanded(
@@ -168,9 +168,9 @@ class _MessageBubbleState extends State<MessageBubble>
                     a: GoogleFonts.interTight(
                         fontSize: 15, color: AppTheme.ink, decoration: TextDecoration.underline),
                     code: GoogleFonts.jetBrainsMono(
-                      backgroundColor: Colors.white.withValues(alpha: 0.08),
+                      backgroundColor: AppTheme.surface2,
                       fontSize: 13,
-                      color: Colors.white.withValues(alpha: 0.85),
+                      color: AppTheme.ink,
                     ),
                     codeblockDecoration: BoxDecoration(
                       color: AppTheme.surface,

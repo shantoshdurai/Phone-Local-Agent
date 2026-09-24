@@ -1,6 +1,7 @@
 package com.localagent.local_agent
 
 import android.content.pm.PackageManager
+import android.view.WindowManager
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -15,6 +16,26 @@ class MainActivity : FlutterActivity() {
             .setMethodCallHandler { call, result ->
                 when (call.method) {
                     "getAppSizes" -> result.success(collectAppSizes())
+                    else -> result.notImplemented()
+                }
+            }
+        // Keeps the screen on while a model downloads or generates: with the
+        // screen off Android suspends the CPU and a slow on-device reply (or
+        // a multi-GB download) stalls.
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.localagent/screen")
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "keepOn" -> {
+                        val on = call.arguments as? Boolean ?: false
+                        runOnUiThread {
+                            if (on) {
+                                window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                            } else {
+                                window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                            }
+                        }
+                        result.success(null)
+                    }
                     else -> result.notImplemented()
                 }
             }

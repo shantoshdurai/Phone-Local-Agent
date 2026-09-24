@@ -12,15 +12,16 @@ import '../app/launch.dart';
 import '../models/chat_message.dart';
 import '../services/agent/agent_service.dart';
 import '../services/database_service.dart';
-import '../services/device_service.dart';
-import '../services/model_downloader_service.dart';
+import '../services/local/model_catalog.dart';
+import '../services/memory_service.dart';
 import '../services/tools/tool_runtime.dart';
 import '../theme/app_theme.dart';
 import '../widgets/design_components.dart';
 import '../widgets/message_bubble.dart';
 import '../widgets/suggestions_list.dart';
 import 'api_key_setup_screen.dart';
-import 'model_picker_screen.dart';
+import 'memory_screen.dart';
+import 'model_hub_screen.dart';
 import 'settings_screen.dart';
 import 'voice_mode_screen.dart';
 
@@ -46,6 +47,7 @@ class _ChatScreenState extends State<ChatScreen> {
   String _sessionFilter = '';
   String? _selectedImagePath;
   bool _busy = false;
+  bool _memoryOn = true;
   bool _speechReady = false;
   bool _listening = false;
 
@@ -77,6 +79,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _agent.confirmHandler = _confirmAction;
     _eventsSub = _agent.events.listen(_onAgentEvent);
     _startBlank();
+    _loadMemoryState();
   }
 
   @override
@@ -298,11 +301,62 @@ class _ChatScreenState extends State<ChatScreen> {
     ));
   }
 
+  // ── memory ──────────────────────────────────────────────────────────────
+
+  Future<void> _loadMemoryState() async {
+    final on = await MemoryService.instance.enabled();
+    if (mounted) setState(() => _memoryOn = on);
+  }
+
+  Future<void> _memoryMenu() async {
+    final count = (await MemoryService.instance.all()).length;
+    if (!mounted) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: AppTheme.surface,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SwitchListTile(
+              value: _memoryOn,
+              onChanged: (v) async {
+                Navigator.pop(ctx);
+                await MemoryService.instance.setEnabled(v);
+                await _agent.refreshMemory();
+                await _loadMemoryState();
+                _snack(v ? 'Memory on: I\'ll use what you asked me to remember.' : 'Memory off for all chats.');
+              },
+              secondary: Icon(Icons.psychology_rounded, color: AppTheme.ink),
+              title: Text('Use memory', style: GoogleFonts.interTight(color: AppTheme.ink, fontWeight: FontWeight.w600)),
+              subtitle: Text(
+                count == 0
+                    ? 'Nothing saved yet. Say "remember that…" to save a fact.'
+                    : '$count saved fact${count == 1 ? '' : 's'} can be used as context',
+                style: GoogleFonts.interTight(color: AppTheme.muted, fontSize: 12),
+              ),
+            ),
+            ListTile(
+              leading: Icon(Icons.list_alt_rounded, color: AppTheme.ink2),
+              title: Text('See and edit memories', style: GoogleFonts.interTight(color: AppTheme.ink)),
+              onTap: () async {
+                Navigator.pop(ctx);
+                await Navigator.push(context, MaterialPageRoute(builder: (_) => const MemoryScreen()));
+                await _loadMemoryState();
+              },
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+
   // ── model switching ─────────────────────────────────────────────────────
 
   Future<void> _showModelSheet() async {
-    final downloaded = await ModelDownloaderService().downloadedModels();
-    final arm64 = await DeviceService().isArm64();
+    final downloaded = await ModelCatalog.downloaded();
     final cloud = await savedCloudTarget();
     if (!mounted) return;
     final current = _agent.target;
@@ -326,7 +380,7 @@ class _ChatScreenState extends State<ChatScreen> {
             subtitle: subtitle == null
                 ? null
                 : Text(subtitle, style: GoogleFonts.interTight(color: AppTheme.muted, fontSize: 12)),
-            trailing: selected ? const Icon(Icons.check_rounded, color: AppTheme.ink, size: 18) : null,
+            trailing: selected ? Icon(Icons.check_rounded, color: AppTheme.ink, size: 18) : null,
             onTap: onTap,
           );
         }
@@ -338,25 +392,25 @@ class _ChatScreenState extends State<ChatScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const SectionHeader('ON THIS PHONE'),
-                for (final spec in downloaded.where((s) => arm64 || !s.arm64Only))
+                for (final model in downloaded)
                   tile(
-                    icon: Icons.smartphone_outlined,
-                    title: spec.displayName,
-                    subtitle: '${spec.sizeLabel} · private, works offline',
-                    selected: current is LocalTarget && current.spec.fileName == spec.fileName,
+                    icon: model.supportsVision ? Icons.image_outlined : Icons.smartphone_outlined,
+                    title: model.name,
+                    subtitle: '${model.sizeLabel} · private, works offline',
+                    selected: current is LocalTarget && current.model.id == model.id,
                     onTap: () {
                       Navigator.pop(ctx);
-                      if (!(current is LocalTarget && current.spec.fileName == spec.fileName)) {
-                        launchAgent(context, LocalTarget(spec));
+                      if (!(current is LocalTarget && current.model.id == model.id)) {
+                        launchAgent(context, LocalTarget(model));
                       }
                     },
                   ),
                 tile(
-                  icon: Icons.download_rounded,
-                  title: 'Download models…',
+                  icon: Icons.explore_outlined,
+                  title: downloaded.isEmpty ? 'Download a model…' : 'Get more models…',
                   onTap: () {
                     Navigator.pop(ctx);
-                    Navigator.push(context, MaterialPageRoute(builder: (_) => const ModelPickerScreen()));
+                    Navigator.push(context, MaterialPageRoute(builder: (_) => const ModelHubScreen()));
                   },
                 ),
                 const SectionHeader('CLOUD (YOUR API KEY)'),
@@ -447,7 +501,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final target = _agent.target;
     final isCloud = target?.isCloud ?? false;
     final title = switch (target) {
-      LocalTarget(:final spec) => spec.displayName,
+      LocalTarget(:final model) => model.name,
       CloudTarget(:final config) => config.preset.shortName,
       null => 'Local Agent',
     };
@@ -458,7 +512,7 @@ class _ChatScreenState extends State<ChatScreen> {
     };
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: AppTheme.border))),
+      decoration: BoxDecoration(border: Border(bottom: BorderSide(color: AppTheme.border))),
       child: Row(
         children: [
           HeaderIconButton(
@@ -492,7 +546,7 @@ class _ChatScreenState extends State<ChatScreen> {
                             ),
                           ),
                         ),
-                        const Icon(Icons.keyboard_arrow_down_rounded, color: AppTheme.muted, size: 18),
+                        Icon(Icons.keyboard_arrow_down_rounded, color: AppTheme.muted, size: 18),
                       ],
                     ),
                     if (subtitle.isNotEmpty)
@@ -523,8 +577,8 @@ class _ChatScreenState extends State<ChatScreen> {
   Widget _buildEmptyState() {
     final target = _agent.target;
     final greeting = switch (target) {
-      LocalTarget(:final spec) =>
-        'Hi! I\'m running ${spec.displayName} right here on your phone. Ask me something, or tell me what to do.',
+      LocalTarget(:final model) =>
+        'Hi! I\'m running ${model.name} right here on your phone. Ask me something, or tell me what to do.',
       CloudTarget(:final config) =>
         'Hi! I\'m using ${config.preset.name} with your API key. Ask me something, or tell me what to do on your phone.',
       null => 'Hi! How can I help?',
@@ -573,7 +627,7 @@ class _ChatScreenState extends State<ChatScreen> {
   Widget _buildComposer() {
     return Container(
       padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
-      decoration: const BoxDecoration(border: Border(top: BorderSide(color: AppTheme.border))),
+      decoration: BoxDecoration(border: Border(top: BorderSide(color: AppTheme.border))),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -622,6 +676,13 @@ class _ChatScreenState extends State<ChatScreen> {
                     crossAxisAlignment: CrossAxisAlignment.end,
                     children: [
                       _circleIcon(Icons.add_rounded, 21, tooltip: 'Attach image', onTap: _busy ? null : _pickImage),
+                      _circleIcon(
+                        _memoryOn ? Icons.psychology_rounded : Icons.psychology_outlined,
+                        20,
+                        tooltip: _memoryOn ? 'Memory on' : 'Memory off',
+                        highlighted: _memoryOn,
+                        onTap: _busy ? null : _memoryMenu,
+                      ),
                       Expanded(
                         child: TextField(
                           controller: _textController,
@@ -632,11 +693,11 @@ class _ChatScreenState extends State<ChatScreen> {
                           onSubmitted: (_) => _send(),
                           onTap: () => Future.delayed(const Duration(milliseconds: 300), _scrollToBottom),
                           style: GoogleFonts.interTight(color: AppTheme.ink, fontSize: 15),
-                          cursorColor: AppTheme.ink,
+                          cursorColor: AppTheme.primary,
                           decoration: InputDecoration(
                             hintText: _listening ? 'Listening…' : 'Ask anything…',
                             hintStyle: GoogleFonts.interTight(
-                                color: Colors.white.withValues(alpha: 0.4), fontSize: 15),
+                                color: AppTheme.muted, fontSize: 15),
                             border: InputBorder.none,
                             enabledBorder: InputBorder.none,
                             focusedBorder: InputBorder.none,
@@ -685,13 +746,13 @@ class _ChatScreenState extends State<ChatScreen> {
                           height: 48,
                           decoration: BoxDecoration(
                             shape: BoxShape.circle,
-                            color: _busy ? AppTheme.error.withValues(alpha: 0.85) : AppTheme.ink,
+                            color: _busy ? AppTheme.error.withValues(alpha: 0.85) : AppTheme.primary,
                           ),
                           child: Icon(
                             _busy
                                 ? Icons.stop_rounded
                                 : (hasInput ? Icons.arrow_upward_rounded : Icons.graphic_eq_rounded),
-                            color: _busy ? Colors.white : AppTheme.bg,
+                            color: _busy ? Colors.white : AppTheme.onPrimary,
                             size: 21,
                           ),
                         ),
@@ -747,7 +808,7 @@ class _ChatScreenState extends State<ChatScreen> {
     return Drawer(
       backgroundColor: AppTheme.bg,
       width: MediaQuery.of(context).size.width * 0.86,
-      shape: const Border(right: BorderSide(color: AppTheme.border)),
+      shape: Border(right: BorderSide(color: AppTheme.border)),
       child: SafeArea(
         child: Column(
           children: [
@@ -766,7 +827,7 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
             ),
             ListTile(
-              leading: const Icon(Icons.add_rounded, color: AppTheme.ink, size: 20),
+              leading: Icon(Icons.add_rounded, color: AppTheme.ink, size: 20),
               title: Text('New chat', style: GoogleFonts.interTight(color: AppTheme.ink, fontSize: 14)),
               onTap: () async {
                 Navigator.pop(context);
@@ -781,7 +842,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 style: GoogleFonts.interTight(color: AppTheme.ink, fontSize: 14),
                 decoration: InputDecoration(
                   isDense: true,
-                  prefixIcon: const Icon(Icons.search_rounded, size: 18, color: AppTheme.muted),
+                  prefixIcon: Icon(Icons.search_rounded, size: 18, color: AppTheme.muted),
                   hintText: 'Search chats',
                   contentPadding: const EdgeInsets.symmetric(vertical: 10),
                 ),
@@ -846,7 +907,7 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
             Container(
               padding: const EdgeInsets.fromLTRB(20, 10, 8, 10),
-              decoration: const BoxDecoration(border: Border(top: BorderSide(color: AppTheme.border))),
+              decoration: BoxDecoration(border: Border(top: BorderSide(color: AppTheme.border))),
               child: Row(
                 children: [
                   Icon(target?.isCloud ?? false ? Icons.cloud_outlined : Icons.smartphone_outlined,
@@ -860,7 +921,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   ),
                   IconButton(
                     tooltip: 'Settings',
-                    icon: const Icon(Icons.settings_outlined, color: AppTheme.ink2, size: 19),
+                    icon: Icon(Icons.settings_outlined, color: AppTheme.ink2, size: 19),
                     onPressed: () {
                       Navigator.pop(context);
                       Navigator.push(context, MaterialPageRoute(builder: (_) => const SettingsScreen()));
@@ -907,7 +968,7 @@ class _TypingIndicator extends StatelessWidget {
           padding: const EdgeInsets.only(left: 4, top: 8, bottom: 8),
           child: Row(
             children: [
-              const SizedBox(
+              SizedBox(
                 width: 12,
                 height: 12,
                 child: CircularProgressIndicator(

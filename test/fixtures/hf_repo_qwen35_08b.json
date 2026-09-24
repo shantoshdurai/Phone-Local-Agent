@@ -1,0 +1,123 @@
+{
+"id": "unsloth/Qwen3.5-0.8B-GGUF",
+"sha": "6ab461498e2023f6e3c1baea90a8f0fe38ab64d0",
+"gated": false,
+"pipeline_tag": "image-text-to-text",
+"siblings": [
+{
+"rfilename": ".gitattributes",
+"size": 3104
+},
+{
+"rfilename": "Qwen3.5-0.8B-BF16.gguf",
+"size": 1516744736
+},
+{
+"rfilename": "Qwen3.5-0.8B-IQ4_NL.gguf",
+"size": 506859776
+},
+{
+"rfilename": "Qwen3.5-0.8B-IQ4_XS.gguf",
+"size": 492605696
+},
+{
+"rfilename": "Qwen3.5-0.8B-Q3_K_M.gguf",
+"size": 470167808
+},
+{
+"rfilename": "Qwen3.5-0.8B-Q3_K_S.gguf",
+"size": 440750336
+},
+{
+"rfilename": "Qwen3.5-0.8B-Q4_0.gguf",
+"size": 507154688
+},
+{
+"rfilename": "Qwen3.5-0.8B-Q4_1.gguf",
+"size": 535171328
+},
+{
+"rfilename": "Qwen3.5-0.8B-Q4_K_M.gguf",
+"size": 532517120
+},
+{
+"rfilename": "Qwen3.5-0.8B-Q4_K_S.gguf",
+"size": 508104960
+},
+{
+"rfilename": "Qwen3.5-0.8B-Q5_K_M.gguf",
+"size": 590057728
+},
+{
+"rfilename": "Qwen3.5-0.8B-Q5_K_S.gguf",
+"size": 568889600
+},
+{
+"rfilename": "Qwen3.5-0.8B-Q6_K.gguf",
+"size": 639029504
+},
+{
+"rfilename": "Qwen3.5-0.8B-Q8_0.gguf",
+"size": 811843840
+},
+{
+"rfilename": "Qwen3.5-0.8B-UD-IQ2_M.gguf",
+"size": 371933440
+},
+{
+"rfilename": "Qwen3.5-0.8B-UD-IQ2_XXS.gguf",
+"size": 338227456
+},
+{
+"rfilename": "Qwen3.5-0.8B-UD-IQ3_XXS.gguf",
+"size": 398237952
+},
+{
+"rfilename": "Qwen3.5-0.8B-UD-Q2_K_XL.gguf",
+"size": 417718528
+},
+{
+"rfilename": "Qwen3.5-0.8B-UD-Q3_K_XL.gguf",
+"size": 492216576
+},
+{
+"rfilename": "Qwen3.5-0.8B-UD-Q4_K_XL.gguf",
+"size": 558772480
+},
+{
+"rfilename": "Qwen3.5-0.8B-UD-Q5_K_XL.gguf",
+"size": 606585088
+},
+{
+"rfilename": "Qwen3.5-0.8B-UD-Q6_K_XL.gguf",
+"size": 771092736
+},
+{
+"rfilename": "Qwen3.5-0.8B-UD-Q8_K_XL.gguf",
+"size": 1186443520
+},
+{
+"rfilename": "README.md",
+"size": 62950
+},
+{
+"rfilename": "imatrix_unsloth.gguf_file",
+"size": 1134720
+},
+{
+"rfilename": "mmproj-BF16.gguf",
+"size": 207346528
+},
+{
+"rfilename": "mmproj-F16.gguf",
+"size": 204987232
+},
+{
+"rfilename": "mmproj-F32.gguf",
+"size": 402381664
+}
+],
+"cardData": {
+"license": "apache-2.0"
+}
+}

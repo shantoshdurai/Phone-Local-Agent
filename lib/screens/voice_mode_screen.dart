@@ -351,7 +351,7 @@ class _VoiceModeScreenState extends State<VoiceModeScreen> with TickerProviderSt
               Expanded(
                 child: Container(
                   width: double.infinity,
-                  decoration: const BoxDecoration(
+                  decoration: BoxDecoration(
                     gradient: RadialGradient(
                       radius: 0.9,
                       center: Alignment(0, -0.6),
@@ -433,7 +433,7 @@ class _VoiceModeScreenState extends State<VoiceModeScreen> with TickerProviderSt
                       height: 250,
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
-                        border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
+                        border: Border.all(color: AppTheme.ink.withValues(alpha: 0.1)),
                       ),
                     ),
                   ),
@@ -454,7 +454,7 @@ class _VoiceModeScreenState extends State<VoiceModeScreen> with TickerProviderSt
                     ),
                     boxShadow: [
                       BoxShadow(
-                        color: Colors.white.withValues(alpha: active ? 0.05 + pulse * 0.05 : 0.03),
+                        color: AppTheme.ink.withValues(alpha: active ? 0.05 + pulse * 0.05 : 0.03),
                         blurRadius: 70,
                       ),
                     ],

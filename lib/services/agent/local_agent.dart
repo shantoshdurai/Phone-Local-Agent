@@ -1,293 +1,205 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 
-import 'package:flutter/foundation.dart';
-// flutter_gemma exports its own ModelSpec; we use ours from model_registry.
-import 'package:flutter_gemma/flutter_gemma.dart' hide ModelSpec;
+import 'package:llamadart/llamadart.dart';
 
-import '../model_downloader_service.dart';
-import '../model_registry.dart';
+import '../local/device_profile.dart';
+import '../local/inference_settings.dart';
+import '../local/local_engine.dart';
+import '../local/local_model.dart';
+import '../memory_service.dart';
 import '../tools/tool_catalog.dart';
 import '../tools/tool_runtime.dart';
 import 'agent_types.dart';
 import 'prompts.dart';
 import 'text_utils.dart';
 
-/// On-device backend on flutter_gemma (MediaPipe `.task` / LiteRT-LM
-/// `.litertlm`).
+/// On-device agent on llama.cpp.
 ///
-/// Session lifecycle is managed explicitly because the SDK does not:
-///  * `createChat` returns the *existing* native session until it is closed,
-///    so the old code's warm-up session (no system prompt) silently became
-///    every chat's session — the system prompt and tool rules never reached
-///    the model, and one conversation leaked into the next.
-///  * The SDK only counts response tokens toward the context limit, so the
-///    window overflowed long before it recycled. We track the whole session
-///    (system prompt, tool catalog, inputs, tool results, outputs) and start
-///    a fresh session with a compact transcript before it can overflow.
-///  * MediaPipe sessions have no roles for replayed history: every
-///    `addQuery` before a generate becomes part of one user turn. History is
-///    replayed as a clearly labelled transcript instead of fake turns.
+/// The conversation is kept as real chat messages (user, assistant, tool
+/// calls, tool results) and rendered with the model's own chat template on
+/// every step. llama.cpp keeps the previous prompt in its KV cache and only
+/// processes what changed, so a long system prompt with tool declarations
+/// is paid for once per chat, not per message.
 class LocalAgent {
-  InferenceModel? _model;
-  ModelSpec? _spec;
-  bool _usingGpu = false;
+  LocalAgent({ToolExecutor? executeTool}) : _executeTool = executeTool ?? runTool;
+
+  final LocalEngine _engine = LocalEngine.instance;
+  final ToolExecutor _executeTool;
+
+  LocalModel? _model;
+  InferenceSettings? _settings;
   List<ToolSpec> _tools = const [];
-
-  InferenceChat? _chat;
-  bool _chatDirty = false;
-  int _sessionTokens = 0;
-  bool _pendingToolResponse = false;
-
-  /// Recent (user, assistant) exchanges, replayed into a fresh session.
-  final List<(String, String)> _transcript = [];
-
-  /// One-off context for the next prompt (e.g. instant commands that ran
-  /// without the model).
-  final List<String> _notes = [];
-  bool _replayPending = false;
+  List<ToolDefinition> _defs = const [];
+  final List<LlamaChatMessage> _history = [];
+  String? _memoryBlock;
 
   bool _busy = false;
   bool _stopRequested = false;
-  StreamSubscription<ModelResponse>? _activeSub;
-  Completer<void>? _activeDone;
+  Future<void>? _warmup;
 
-  static bool _gemmaInitialized = false;
   static const int _maxSteps = 4;
 
-  ModelSpec? get spec => _spec;
-  bool get isLoaded => _model != null;
-  bool get usingGpu => _usingGpu;
+  /// Receives raw model output and tool results; set by tests to diagnose
+  /// prompts.
+  static void Function(String message)? debugLog;
+  static const int _maxHistoryMessages = 30;
+
+  LocalModel? get model => _model;
+  bool get isLoaded => _engine.isLoaded && _model != null;
+  bool get usingGpu => _engine.usingGpu;
   bool get isBusy => _busy;
+  InferenceSettings? get settings => _settings;
+  bool get supportsVision => _model?.supportsVision ?? false;
 
   Set<String> get _toolNames => {for (final t in _tools) t.name};
 
-  /// Tokens held back for the model's reply when budgeting a prompt.
-  int get _responseReserve => (_spec!.contextTokens * 0.15).round().clamp(200, 600);
+  bool get _thinking => (_settings?.thinking ?? false) && (_model?.supportsThinking ?? false);
 
-  /// Tool results are cut to fit small context windows.
-  int get _toolResultChars => _spec!.contextTokens >= 4096 ? 1800 : 600;
+  /// Tool results are cut to fit the context window.
+  int get _toolResultChars => (_settings?.contextSize ?? 4096) >= 8192
+      ? 4000
+      : ((_settings?.contextSize ?? 4096) >= 4096 ? 2000 : 800);
 
-  Future<void> load(
-    ModelSpec spec, {
-    required bool preferGpu,
-    void Function(String status)? onStatus,
-  }) async {
-    final wantGpu = preferGpu && spec.gpuCapable;
-    if (_model != null && _spec?.fileName == spec.fileName && _usingGpu == wantGpu) {
-      return;
-    }
-    await unload();
-
-    final path = await ModelDownloaderService().pathFor(spec.fileName);
-    if (!await File(path).exists()) {
-      throw StateError('${spec.displayName} isn\'t downloaded yet.');
-    }
-    if (!_gemmaInitialized) {
-      await FlutterGemma.initialize();
-      _gemmaInitialized = true;
-    }
-    onStatus?.call('Loading ${spec.displayName}');
-    await FlutterGemma.installModel(
-      modelType: spec.modelType,
-      fileType: spec.fileType,
-    ).fromFile(path).install();
-
-    _spec = spec;
-    _tools = spec.supportsTools ? selectToolsForBudget(spec.toolBudget) : const [];
-
-    if (wantGpu) {
-      try {
-        await _openModel(spec, PreferredBackend.gpu);
-        onStatus?.call('Warming up the GPU');
-        if (await _warmup()) {
-          _usingGpu = true;
-          return;
-        }
-      } catch (e) {
-        debugPrint('[LocalAgent] GPU load failed, falling back to CPU: $e');
-      }
-      await _closeModel();
-      onStatus?.call('GPU unavailable, using CPU');
-    }
-    await _openModel(spec, PreferredBackend.cpu);
-    _usingGpu = false;
-    onStatus?.call('Warming up');
-    await _warmup();
+  Future<void> load(LocalModel model, {void Function(String status)? onStatus}) async {
+    await _awaitWarmup(cancel: true);
+    final device = await DeviceProfile.load();
+    final settings = await InferenceSettingsStore.load(model, device);
+    await _engine.load(model, settings, onStatus: onStatus);
+    _model = model;
+    _settings = settings;
+    _configureTools();
+    _memoryBlock = await MemoryService.instance.promptBlock();
+    _scheduleWarmup();
   }
 
-  Future<void> _openModel(ModelSpec spec, PreferredBackend backend) async {
-    _model = await FlutterGemma.getActiveModel(
-      maxTokens: spec.contextTokens,
-      preferredBackend: backend,
-      supportImage: spec.supportsVision,
-      maxNumImages: spec.supportsVision ? 1 : null,
-    );
-  }
-
-  Future<void> _closeModel() async {
-    await _closeChat();
-    try {
-      await _model?.close();
-    } catch (_) {}
-    _model = null;
+  /// Applies new settings; reloads the model only if context size, threads
+  /// or GPU changed.
+  Future<void> applySettings(InferenceSettings settings, {void Function(String status)? onStatus}) async {
+    final model = _model;
+    if (model == null) return;
+    await InferenceSettingsStore.save(model, settings);
+    final reload = _settings == null || settings.needsReloadComparedTo(_settings!);
+    _settings = settings;
+    if (reload) {
+      await _awaitWarmup(cancel: true);
+      await _engine.load(model, settings, onStatus: onStatus);
+      _scheduleWarmup();
+    }
   }
 
   Future<void> unload() async {
-    await _closeModel();
-    _spec = null;
+    await _awaitWarmup(cancel: true);
+    await _engine.unload();
+    _model = null;
+    _settings = null;
     _tools = const [];
+    _defs = const [];
   }
 
-  /// Runs one tiny generation so the first real message doesn't pay for
-  /// weight paging / shader compilation. Its session is closed afterwards —
-  /// leaving it open is what hijacked every later chat.
-  Future<bool> _warmup() async {
-    final spec = _spec!;
-    InferenceChat? chat;
-    try {
-      chat = await _model!.createChat(
-        temperature: spec.temperature,
-        topK: spec.topK,
-        topP: spec.topP,
-        tokenBuffer: 64,
-        modelType: spec.modelType,
-        isThinking: false,
-        supportsFunctionCalls: false,
-      );
-      await chat.addQuery(Message.text(text: 'Hi', isUser: true));
-      final warm = chat;
-      var tokens = 0;
-      final done = Completer<void>();
-      final sub = warm.generateChatResponseAsync().listen(
-        (r) {
-          if (r is TextResponse && ++tokens == 4) unawaited(_safeStop(warm));
-        },
-        onDone: () {
-          if (!done.isCompleted) done.complete();
-        },
-        onError: (Object e) {
-          if (!done.isCompleted) done.completeError(e);
-        },
-        cancelOnError: true,
-      );
-      try {
-        await done.future.timeout(const Duration(seconds: 120));
-      } on TimeoutException {
-        await _safeStop(warm);
-        await sub.cancel();
-      }
-      return tokens > 0;
-    } catch (e) {
-      debugPrint('[LocalAgent] warm-up failed: $e');
-      return false;
-    } finally {
-      try {
-        await chat?.close();
-      } catch (_) {}
-    }
+  void _configureTools() {
+    final model = _model!;
+    var use = model.toolUse;
+    // Hub models whose chat template has no tool support get plain chat.
+    if (!model.curated && !_engine.templateSupportsTools) use = ToolUse.none;
+    _tools = switch (use) {
+      ToolUse.none => const <ToolSpec>[],
+      ToolUse.lookups => lookupTools(),
+      ToolUse.full => selectToolsForBudget(14),
+    };
+    _defs = [for (final t in _tools) toToolDefinition(t)];
   }
 
-  /// Starts a new conversation seeded with prior [history]; the native
-  /// session is created lazily on the next message.
-  Future<void> resetConversation(List<(String, String)> history) async {
-    await _closeChat();
-    _transcript
-      ..clear()
-      ..addAll(history.length > 6 ? history.sublist(history.length - 6) : history);
-    _notes.clear();
-    _replayPending = _transcript.isNotEmpty;
-  }
-
-  /// Adds context the model didn't see (an instant command's outcome).
-  void addNote(String userText, String outcome) {
-    _notes.add('Earlier the user said "${clip(userText, 80)}" and it was handled: ${clip(outcome, 160)}');
-    if (_notes.length > 3) _notes.removeAt(0);
-    _remember(userText, outcome);
-  }
-
-  Future<void> _closeChat() async {
-    final chat = _chat;
-    _chat = null;
-    _pendingToolResponse = false;
-    if (chat == null) return;
-    try {
-      await chat.close();
-    } catch (e) {
-      debugPrint('[LocalAgent] closing chat failed: $e');
-    }
-  }
-
-  Future<void> _ensureChat() async {
-    if (_chat != null && !_chatDirty) return;
-    await _closeChat();
-    final spec = _spec!;
-    final hasTools = _tools.isNotEmpty;
-    final system = localSystemPrompt(DateTime.now(), hasTools: hasTools);
-    _chat = await _model!.createChat(
-      temperature: spec.temperature,
-      randomSeed: DateTime.now().millisecondsSinceEpoch & 0x7fffffff,
-      topK: spec.topK,
-      topP: spec.topP,
-      tokenBuffer: 256,
-      supportImage: spec.supportsVision,
-      tools: [
-        for (final t in _tools)
-          Tool(name: t.name, description: t.localDescription, parameters: t.parameters),
+  /// Converts a catalog entry to llamadart's typed declaration.
+  static ToolDefinition toToolDefinition(ToolSpec spec) {
+    final props = (spec.parameters['properties'] as Map?)?.cast<String, dynamic>() ?? const {};
+    final required = spec.requiredParams.toSet();
+    return ToolDefinition(
+      name: spec.name,
+      description: spec.localDescription,
+      parameters: [
+        for (final e in props.entries) _param(e.key, e.value as Map, required.contains(e.key)),
       ],
-      supportsFunctionCalls: hasTools,
-      modelType: spec.modelType,
-      isThinking: false,
-      systemInstruction: system,
-      maxFunctionBufferLength: 2048,
+      // Tools are executed by ToolRuntime (with confirmations), not here.
+      handler: (_) async => null,
     );
-    _chatDirty = false;
-    _pendingToolResponse = false;
-    _sessionTokens = estimateTokens(system) + (hasTools ? _toolCatalogTokens() : 0);
-    _replayPending = _transcript.isNotEmpty;
   }
 
-  int _toolCatalogTokens() {
-    final b = StringBuffer('x' * 480); // SDK tool-use instructions
-    for (final t in _tools) {
-      b.write('${t.name}: ${t.localDescription} Parameters: ${jsonEncode(t.parameters)}\n');
+  static ToolParam _param(String name, Map schema, bool required) {
+    final description = schema['description'] as String?;
+    final values = (schema['enum'] as List?)?.cast<String>();
+    if (values != null) {
+      return ToolParam.enumType(name, values: values, description: description, required: required);
     }
-    return estimateTokens(b.toString());
+    return switch (schema['type']) {
+      'integer' => ToolParam.integer(name, description: description, required: required),
+      'number' => ToolParam.number(name, description: description, required: required),
+      'boolean' => ToolParam.boolean(name, description: description, required: required),
+      _ => ToolParam.string(name, description: description, required: required),
+    };
   }
 
-  String _composePrompt(String userText) {
-    final b = StringBuffer();
-    if (_replayPending && _transcript.isNotEmpty) {
-      final budgetChars = (_spec!.contextTokens * 0.25 * 3.2).round();
-      final picked = <(String, String)>[];
-      var used = 0;
-      for (final turn in _transcript.reversed) {
-        final size = turn.$1.length.clamp(0, 240) + turn.$2.length.clamp(0, 360) + 24;
-        if (used + size > budgetChars) break;
-        picked.insert(0, turn);
-        used += size;
-      }
-      if (picked.isNotEmpty) {
-        b.writeln('Earlier in this conversation:');
-        for (final (user, assistant) in picked) {
-          b.writeln('User: ${clip(user, 240)}');
-          b.writeln('Assistant: ${clip(assistant, 360)}');
-        }
-        b.writeln();
-        b.writeln('New message:');
-      }
-    }
-    for (final note in _notes) {
-      b.writeln('($note)');
-    }
-    b.write(userText);
-    return b.toString();
+  String _systemPrompt() =>
+      localSystemPrompt(DateTime.now(), tools: _toolNames, memory: _memoryBlock);
+
+  // ---------------------------------------------------------------------
+  // Warm-up: process the system prompt and tool declarations right after
+  // loading, while the user is still typing, so the first reply starts fast.
+  // Skipped for models that can't reuse a cached prompt.
+  // ---------------------------------------------------------------------
+
+  void _scheduleWarmup() {
+    if (!_engine.cachesPrompt || _settings == null) return;
+    _warmup = _runWarmup();
   }
 
-  void _remember(String user, String assistant) {
-    _transcript.add((user, assistant));
-    if (_transcript.length > 6) _transcript.removeAt(0);
+  Future<void> _runWarmup() async {
+    try {
+      final messages = [
+        LlamaChatMessage.fromText(role: LlamaChatRole.system, text: _systemPrompt()),
+        const LlamaChatMessage.fromText(role: LlamaChatRole.user, text: 'Hi'),
+      ];
+      final template = await _engine.render(messages, tools: _defs, thinking: _thinking);
+      await for (final _ in _engine.generateRaw(template, messages, _settings!, maxTokens: 1)) {}
+    } catch (_) {
+      // Warm-up is best effort.
+    }
+  }
+
+  Future<void> _awaitWarmup({bool cancel = false}) async {
+    final w = _warmup;
+    if (w == null) return;
+    if (cancel) _engine.cancel();
+    try {
+      await w;
+    } catch (_) {}
+    _warmup = null;
+  }
+
+  // ---------------------------------------------------------------------
+  // Conversation
+  // ---------------------------------------------------------------------
+
+  /// Starts a new conversation seeded with prior text exchanges.
+  Future<void> resetConversation(List<(String, String)> exchanges) async {
+    _history.clear();
+    final recent = exchanges.length > 6 ? exchanges.sublist(exchanges.length - 6) : exchanges;
+    for (final (user, assistant) in recent) {
+      _history
+        ..add(LlamaChatMessage.fromText(role: LlamaChatRole.user, text: user))
+        ..add(LlamaChatMessage.fromText(role: LlamaChatRole.assistant, text: assistant));
+    }
+    _memoryBlock = await MemoryService.instance.promptBlock();
+  }
+
+  /// Records an exchange the model didn't handle (an instant command).
+  void addNote(String userText, String outcome) {
+    _history
+      ..add(LlamaChatMessage.fromText(role: LlamaChatRole.user, text: userText))
+      ..add(LlamaChatMessage.fromText(role: LlamaChatRole.assistant, text: outcome));
+    _trimHistory();
   }
 
   Future<AgentReply> run(
@@ -296,110 +208,138 @@ class LocalAgent {
     required AgentEventSink sink,
     required ToolContext toolContext,
   }) async {
-    final spec = _spec;
-    if (_model == null || spec == null) {
+    final model = _model;
+    final settings = _settings;
+    if (model == null || settings == null || !_engine.isLoaded) {
       throw StateError('The on-device model isn\'t loaded.');
     }
     _busy = true;
     _stopRequested = false;
     final toolsUsed = <String>[];
     String? replyImage;
-    var tokens = 0;
-    var genSeconds = 0.0;
+    var stats = const GenerationStats();
+    final sw = Stopwatch()..start();
+    final turnStart = _history.length;
 
-    AgentReply reply(String text, {bool stopped = false, bool isError = false}) =>
-        AgentReply(
+    AgentReply reply(String text, {bool stopped = false, bool isError = false}) => AgentReply(
           text: text,
-          modelLabel: spec.displayName,
+          modelLabel: model.name,
           toolsUsed: toolsUsed,
-          seconds: genSeconds,
-          tokensPerSecond: genSeconds > 0 && tokens > 0 ? tokens / genSeconds : null,
+          seconds: sw.elapsedMilliseconds / 1000,
+          tokensPerSecond: stats.tokensPerSecond,
           imagePath: replyImage,
           stopped: stopped,
           isError: isError,
         );
 
     try {
-      sink.status('Thinking…');
-      Uint8List? imageBytes;
-      if (imagePath != null && spec.supportsVision) {
-        imageBytes = await File(imagePath).readAsBytes();
+      if (_warmup != null) {
+        sink.status('Getting ready…');
+        await _awaitWarmup();
       }
 
-      await _ensureChat();
-      var prompt = _composePrompt(userText);
-      final imageTokens = imageBytes == null ? 0 : 300;
-      if (_sessionTokens + estimateTokens(prompt) + imageTokens + _responseReserve >
-          spec.contextTokens) {
-        // Out of room: fresh session with a compact transcript.
-        _chatDirty = true;
-        await _ensureChat();
-        prompt = _composePrompt(userText);
+      if (imagePath != null) {
+        if (!model.supportsVision) {
+          return reply(
+            '${model.name} can\'t look at images. Pick a model with the photo badge in '
+            'Models, or switch to a cloud model.',
+            isError: true,
+          );
+        }
+        await _engine.ensureVision(onStatus: sink.status);
+        final bytes = await File(imagePath).readAsBytes();
+        _history.add(LlamaChatMessage.withContent(role: LlamaChatRole.user, content: [
+          LlamaImageContent(bytes: bytes),
+          LlamaTextContent(userText),
+        ]));
+        sink.status('Looking at the photo… this can take a while on a phone');
+      } else {
+        _history.add(LlamaChatMessage.fromText(role: LlamaChatRole.user, text: userText));
+        sink.status('Thinking…');
       }
-      _replayPending = false;
-      _notes.clear();
-      if (_pendingToolResponse) {
-        // A tool result from the previous turn is still queued; keep the new
-        // message on its own line.
-        prompt = '\n$prompt';
-        _pendingToolResponse = false;
-      }
-      await _chat!.addQuery(imageBytes == null
-          ? Message.text(text: prompt, isUser: true)
-          : Message.withImage(text: prompt, imageBytes: imageBytes, isUser: true));
-      _sessionTokens += estimateTokens(prompt) + imageTokens;
 
+      var nudged = false;
       for (var step = 0; step < _maxSteps; step++) {
-        final gen = await _generate(sink);
-        tokens += gen.tokens;
-        genSeconds += gen.seconds;
-        _sessionTokens += estimateTokens(gen.text);
+        final gen = await _generate(sink, settings, turnStart);
+        stats = stats + gen.stats;
 
         if (_stopRequested) {
-          final partial = cleanModelText(visiblePrefix(gen.text));
-          final text = partial.isEmpty ? 'Stopped.' : partial;
-          _remember(userText, text);
+          final text = gen.visible.isEmpty ? 'Stopped.' : gen.visible;
+          _history.add(LlamaChatMessage.fromText(role: LlamaChatRole.assistant, text: text));
           return reply(text, stopped: true);
         }
 
         var calls = gen.calls;
         if (calls.isEmpty && _tools.isNotEmpty) {
-          final recovered = extractToolCallFromText(gen.text, _toolNames);
-          if (recovered != null) calls = [(recovered.name, recovered.args)];
+          final recovered = extractToolCallFromText(gen.raw, _toolNames);
+          if (recovered != null) {
+            calls = [_Call('local-${DateTime.now().microsecondsSinceEpoch}', recovered.name, recovered.args, null)];
+          }
         }
 
         if (calls.isEmpty) {
-          final text = cleanModelText(gen.text);
+          final text = gen.content;
           if (gen.looped || isDegenerateOutput(text)) {
-            _chatDirty = true; // a looping session tends to keep looping
             sink.clear();
+            _history.removeRange(turnStart, _history.length);
             return reply(
-              'Sorry, I lost my train of thought. Please try again — a shorter '
-              'question helps on-device models.',
+              'Sorry, I lost my train of thought. Please try again. Shorter questions '
+              'work best with on-device models.',
               isError: true,
             );
           }
-          _remember(userText, text);
+          if (!nudged && _tools.isNotEmpty && step < _maxSteps - 1 && promisesAction(text)) {
+            // It said what it would do but didn't call the tool: ask once.
+            nudged = true;
+            sink.clear();
+            _history
+              ..add(LlamaChatMessage.fromText(role: LlamaChatRole.assistant, text: text))
+              ..add(const _NudgeTurn());
+            continue;
+          }
+          _history.add(LlamaChatMessage.fromText(role: LlamaChatRole.assistant, text: text));
           return reply(text);
         }
 
+        // A preamble ("Sure, let me check") is replaced by the result.
         sink.clear();
+        _history.add(ToolCallTurn([
+          if (gen.content.isNotEmpty) LlamaTextContent(gen.content),
+          for (final c in calls)
+            LlamaToolCallContent(
+              id: c.id,
+              name: c.name,
+              arguments: c.args,
+              rawJson: c.invalidJson ?? jsonEncode(c.args),
+            ),
+        ]));
+
         final direct = <String>[];
         var allDirect = true;
-        for (final (name, args) in calls.take(3)) {
-          sink.status(toolStatusLabel(name));
-          final result = await ToolRuntime.instance.execute(name, args, context: toolContext);
-          toolsUsed.add(name);
-          if (name == 'get_recent_screenshots') {
+        for (final call in calls.take(3)) {
+          sink.status(toolStatusLabel(call.name));
+          final Map<String, dynamic> result;
+          if (call.invalidJson != null) {
+            result = {'error': 'INVALID_JSON: the arguments were not valid JSON. Call the tool again with valid JSON.'};
+          } else if (!_toolNames.contains(call.name)) {
+            result = {'error': 'Unknown tool "${call.name}". Use only the listed tools.'};
+          } else {
+            result = await _executeTool(call.name, call.args, toolContext);
+          }
+          toolsUsed.add(call.name);
+          debugLog?.call('TOOL ${call.name} → ${jsonEncode(result).length > 600 ? '${jsonEncode(result).substring(0, 600)}…' : jsonEncode(result)}');
+          if (call.name == 'get_recent_screenshots') {
             final shots = result['screenshots'];
             if (shots is List && shots.isNotEmpty) {
               replyImage ??= (shots.first as Map)['path'] as String?;
             }
           }
-          final fitted = ToolRuntime.fitToBudget(result, _toolResultChars);
-          await _chat!.addQuery(Message.toolResponse(toolName: name, response: fitted));
-          _sessionTokens += estimateTokens(jsonEncode(fitted)) + 16;
-          final text = ToolRuntime.formatDirect(name, args, result);
+          _history.add(ToolResultTurn(
+            call.id,
+            call.name,
+            jsonEncode(ToolRuntime.fitToBudget(result, _toolResultChars)),
+          ));
+          final text = call.invalidJson == null ? ToolRuntime.formatDirect(call.name, call.args, result) : null;
           if (text == null) {
             allDirect = false;
           } else {
@@ -408,136 +348,270 @@ class LocalAgent {
           if (_stopRequested) break;
         }
 
-        if (_stopRequested) {
-          _pendingToolResponse = true;
+        if (_stopRequested || allDirect) {
+          // Every result has a plain-language sentence: answer now instead of
+          // paying for another (slow on a phone) generation.
           final text = direct.isEmpty ? 'Stopped.' : direct.join('\n');
-          _remember(userText, text);
-          return reply(text, stopped: true);
+          _history.add(LlamaChatMessage.fromText(role: LlamaChatRole.assistant, text: text));
+          return reply(text, stopped: _stopRequested);
         }
-
-        if (allDirect) {
-          // Every result has a plain-language template: reply now instead of
-          // paying for another (slow, error-prone) on-device generation. The
-          // tool result stays queued so the model sees it next turn.
-          _pendingToolResponse = true;
-          final text = direct.join('\n');
-          _remember(userText, text);
-          return reply(text);
-        }
-        sink.status('Thinking…');
+        sink.status('Reading the results…');
       }
 
       return reply(
-        'I couldn\'t finish that on-device. Try a simpler request, or switch to '
-        'a cloud model in Settings for multi-step tasks.',
+        'I couldn\'t finish that on-device. Try a simpler request, or switch to a cloud '
+        'model for multi-step tasks.',
         isError: true,
       );
+    } catch (e) {
+      // Leave no half-finished turn behind.
+      if (_history.length > turnStart) _history.removeRange(turnStart, _history.length);
+      rethrow;
     } finally {
       _busy = false;
+      _dropNudges();
+      _dropImagesFromHistory();
+      _trimHistory();
+      if (stats.generatedTokens >= 16) unawaited(_engine.recordSpeed(stats));
     }
   }
 
-  Future<_Generation> _generate(AgentEventSink sink) async {
-    final chat = _chat!;
-    final text = StringBuffer();
-    final calls = <(String, Map<String, dynamic>)>[];
-    var tokens = 0;
-    var looped = false;
-    var shown = '';
-    final sw = Stopwatch()..start();
-    final done = Completer<void>();
-    _activeDone = done;
+  Future<_Generation> _generate(AgentEventSink sink, InferenceSettings settings, int turnStart) async {
+    final system = LlamaChatMessage.fromText(role: LlamaChatRole.system, text: _systemPrompt());
+    final reserve = math.min(settings.maxTokens, math.max(256, settings.contextSize ~/ 4));
 
-    _activeSub = chat.generateChatResponseAsync().listen(
-      (r) {
-        if (r is TextResponse) {
-          if (r.token.isEmpty) return;
-          text.write(r.token);
-          tokens++;
-          final current = text.toString();
-          final visible = cleanModelText(visiblePrefix(current));
-          if (visible != shown) {
-            shown = visible;
-            if (visible.isNotEmpty) sink.partial(visible);
-          }
-          if (!looped && tokens > 40 && isStuckInLoop(current)) {
-            looped = true;
-            unawaited(_safeStop(chat));
-          }
-        } else if (r is FunctionCallResponse) {
-          calls.add((r.name, Map<String, dynamic>.from(r.args)));
-        } else if (r is ParallelFunctionCallResponse) {
-          for (final c in r.calls) {
-            calls.add((c.name, Map<String, dynamic>.from(c.args)));
-          }
-        }
-      },
-      onDone: () {
-        if (!done.isCompleted) done.complete();
-      },
-      onError: (Object e, StackTrace st) {
-        if (!done.isCompleted) done.completeError(e, st);
-      },
-      cancelOnError: true,
-    );
-
-    try {
-      await done.future;
-    } finally {
-      _activeSub = null;
-      _activeDone = null;
-      sw.stop();
+    // Fit the context window by dropping the oldest turns (never the current
+    // one).
+    late List<LlamaChatMessage> messages;
+    late LlamaChatTemplateResult template;
+    late int promptTokens;
+    var start = turnStart;
+    while (true) {
+      messages = [system, ..._history];
+      template = await _engine.render(messages, tools: _defs, thinking: _thinking);
+      promptTokens = template.tokenCount ?? estimateTokens(template.prompt);
+      if (promptTokens + reserve <= settings.contextSize) break;
+      final cut = _oldestTurnEnd();
+      if (cut == null || cut > start) {
+        throw StateError(
+          'That\'s too long for ${_model!.name}\'s ${settings.contextSize}-token memory. '
+          'Start a new chat, or raise the context size in Model settings.',
+        );
+      }
+      _history.removeRange(0, cut);
+      start -= cut;
     }
+
+    final maxTokens = math.max(64, math.min(settings.maxTokens, settings.contextSize - promptTokens));
+    final raw = StringBuffer();
+    var shown = '';
+    var looped = false;
+    var lastParse = DateTime.fromMillisecondsSinceEpoch(0);
+
+    await for (final piece in _engine.generateRaw(template, messages, settings, maxTokens: maxTokens)) {
+      raw.write(piece);
+      final now = DateTime.now();
+      if (now.difference(lastParse).inMilliseconds >= 120) {
+        lastParse = now;
+        final text = raw.toString();
+        final partial = LocalEngine.parse(template, text, tools: _defs, partial: true);
+        final visible = cleanModelText(visiblePrefix(partial.content));
+        if (visible.isEmpty && (partial.reasoningContent?.isNotEmpty ?? false)) {
+          sink.status('Thinking it through…');
+        }
+        if (visible != shown && visible.isNotEmpty) {
+          shown = visible;
+          sink.partial(visible);
+        }
+        if (!looped && text.length > 200 && isStuckInLoop(text)) {
+          looped = true;
+          _engine.cancel();
+        }
+      }
+    }
+
+    final text = raw.toString();
+    debugLog?.call('PROMPT TOKENS $promptTokens\nRAW OUTPUT: $text');
+    final parsed = LocalEngine.parse(template, text, tools: _defs);
+    final calls = <_Call>[];
+    var index = 0;
+    for (final tc in parsed.toolCalls) {
+      final name = tc.function?.name;
+      if (name == null || name.isEmpty) continue;
+      final argsRaw = tc.function?.arguments ?? '{}';
+      Map<String, dynamic>? args;
+      try {
+        final decoded = argsRaw.trim().isEmpty ? <String, dynamic>{} : jsonDecode(argsRaw);
+        if (decoded is Map) args = Map<String, dynamic>.from(decoded);
+      } catch (_) {}
+      calls.add(_Call(
+        tc.id ?? 'local-${DateTime.now().microsecondsSinceEpoch}-${index++}',
+        name,
+        args ?? const {},
+        args == null ? argsRaw : null,
+      ));
+    }
+    final content = cleanModelText(parsed.content);
     return _Generation(
-      text: text.toString(),
+      raw: text,
+      content: content,
+      visible: cleanModelText(visiblePrefix(content)),
       calls: calls,
-      tokens: tokens,
-      seconds: sw.elapsedMilliseconds / 1000,
+      stats: await _engine.lastStats(),
       looped: looped,
     );
   }
 
-  /// Stops the current generation. If the native side doesn't end the
-  /// stream promptly, the stream is abandoned and the session rebuilt on the
-  /// next message rather than leaving the chat stuck on "Thinking…".
-  Future<void> stop() async {
-    if (!_busy) return;
-    _stopRequested = true;
-    final chat = _chat;
-    if (chat != null) await _safeStop(chat);
-    final done = _activeDone;
-    if (done != null) {
-      unawaited(Future.delayed(const Duration(seconds: 4), () {
-        if (!done.isCompleted) {
-          _activeSub?.cancel();
-          _chatDirty = true;
-          done.complete();
-        }
-      }));
+  /// Index just past the oldest complete turn (user message plus everything
+  /// up to the next user message), or null if there's only one turn.
+  int? _oldestTurnEnd() {
+    for (var i = 1; i < _history.length; i++) {
+      if (_history[i].role == LlamaChatRole.user) return i;
+    }
+    return null;
+  }
+
+  void _trimHistory() {
+    while (_history.length > _maxHistoryMessages) {
+      final cut = _oldestTurnEnd();
+      if (cut == null) break;
+      _history.removeRange(0, cut);
     }
   }
 
-  static Future<void> _safeStop(InferenceChat chat) async {
+  /// Removes nudges and the announcements that prompted them, so they don't
+  /// linger in later turns.
+  void _dropNudges() {
+    for (var i = _history.length - 1; i >= 0; i--) {
+      if (_history[i] is _NudgeTurn) {
+        _history.removeAt(i);
+        if (i > 0 && _history[i - 1].role == LlamaChatRole.assistant) _history.removeAt(i - 1);
+      }
+    }
+  }
+
+  /// Images are re-encoded every time they are in the prompt (slow on a
+  /// phone), so after their turn they become a text note.
+  void _dropImagesFromHistory() {
+    for (var i = 0; i < _history.length; i++) {
+      final m = _history[i];
+      if (!m.parts.any((p) => p is LlamaImageContent)) continue;
+      final text = m.parts.whereType<LlamaTextContent>().map((p) => p.text).join(' ').trim();
+      _history[i] = LlamaChatMessage.fromText(
+        role: m.role,
+        text: '(The user shared a photo.) $text'.trim(),
+      );
+    }
+  }
+
+  /// Stops the current reply; the stream ends at the next token.
+  Future<void> stop() async {
+    if (!_busy) return;
+    _stopRequested = true;
+    _engine.cancel();
+  }
+
+  /// Measures tokens per second with the loaded model.
+  Future<GenerationStats> benchmark() async {
+    await _awaitWarmup();
+    return _engine.benchmark();
+  }
+}
+
+/// An assistant turn that called tools. llamadart hands tool-call arguments
+/// to chat templates as a JSON string, but Hugging Face templates take an
+/// object (Gemma 4's raises an error on a string), so they're decoded here.
+class ToolCallTurn extends LlamaChatMessage {
+  const ToolCallTurn(List<LlamaContentPart> content)
+      : super.withContent(role: LlamaChatRole.assistant, content: content);
+
+  @override
+  Map<String, dynamic> toJson() {
+    final json = super.toJson();
+    final calls = json['tool_calls'];
+    if (calls is List) {
+      // Rebuilt rather than mutated: llamadart's maps are Map<String, String>.
+      json['tool_calls'] = [
+        for (final c in calls)
+          if (c is Map && c['function'] is Map)
+            {
+              ...c,
+              'function': {
+                ...(c['function'] as Map),
+                'arguments': _decodeArguments((c['function'] as Map)['arguments']),
+              },
+            }
+          else
+            c,
+      ];
+    }
+    return json;
+  }
+
+  static Object? _decodeArguments(Object? raw) {
+    if (raw is! String) return raw;
     try {
-      await chat.stopGeneration();
+      final decoded = jsonDecode(raw);
+      return decoded is Map ? decoded : raw;
     } catch (_) {
-      // Already stopped / not supported.
+      return raw;
     }
   }
 }
 
+/// A tool result in the OpenAI shape (`role: tool`, `tool_call_id`, `name`,
+/// `content`) that chat templates read. llamadart's Gemma 4 path otherwise
+/// emits a shape the template drops, so the model never saw the result.
+class ToolResultTurn extends LlamaChatMessage {
+  final String callId;
+  final String toolName;
+  final String body;
+
+  ToolResultTurn(this.callId, this.toolName, this.body)
+      : super.fromText(role: LlamaChatRole.tool, text: body);
+
+  @override
+  List<LlamaContentPart> get parts => [LlamaTextContent(body)];
+
+  @override
+  Map<String, dynamic> toJson() =>
+      {'role': 'tool', 'tool_call_id': callId, 'name': toolName, 'content': body};
+}
+
+/// Follow-up sent when the model announced an action without taking it.
+class _NudgeTurn extends LlamaChatMessage {
+  const _NudgeTurn()
+      : super.fromText(
+          role: LlamaChatRole.user,
+          text: 'Go ahead and do it now: call the tool, or answer from the results you already have.',
+        );
+}
+
+class _Call {
+  final String id;
+  final String name;
+  final Map<String, dynamic> args;
+
+  /// Raw arguments when they weren't valid JSON.
+  final String? invalidJson;
+
+  const _Call(this.id, this.name, this.args, this.invalidJson);
+}
+
 class _Generation {
-  final String text;
-  final List<(String, Map<String, dynamic>)> calls;
-  final int tokens;
-  final double seconds;
+  final String raw;
+  final String content;
+  final String visible;
+  final List<_Call> calls;
+  final GenerationStats stats;
   final bool looped;
 
   const _Generation({
-    required this.text,
+    required this.raw,
+    required this.content,
+    required this.visible,
     required this.calls,
-    required this.tokens,
-    required this.seconds,
+    required this.stats,
     required this.looped,
   });
 }

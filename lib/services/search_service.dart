@@ -8,10 +8,23 @@ class SearchResult {
   final String title;
   final String snippet;
   final String url;
-  const SearchResult(this.title, this.snippet, this.url);
 
-  Map<String, dynamic> toJson() =>
-      {'title': title, 'snippet': snippet, 'url': url};
+  /// Publication date for news results.
+  final DateTime? published;
+  final String? source;
+
+  const SearchResult(this.title, this.snippet, this.url, {this.published, this.source});
+
+  /// News links are long Google redirect URLs that cost a phone model
+  /// hundreds of tokens and tell it nothing, so news results carry the
+  /// publisher and date instead.
+  Map<String, dynamic> toJson() => {
+        'title': title,
+        if (snippet.isNotEmpty) 'snippet': snippet,
+        if (published == null) 'url': url.length > 120 ? url.substring(0, 120) : url,
+        if (published != null) 'published': published!.toIso8601String().substring(0, 10),
+        if (source != null) 'source': source,
+      };
 }
 
 /// Keyless web search for the `search_web` tool.
@@ -33,33 +46,169 @@ class SearchService {
   SearchService({http.Client Function()? clientFactory})
       : _clientFactory = clientFactory ?? http.Client.new;
 
+  /// Web results plus recent news, filtered for relevance.
+  ///
+  /// Search engines serve degraded pages to clients they suspect are bots
+  /// (Bing answered "who won the last F1 race" with dictionary entries for
+  /// "won"), so web results must share key words with the question to
+  /// count, and Google News is queried alongside for anything current.
   Future<Map<String, dynamic>> searchWeb(String query) async {
-    final sources = <(String, Future<List<SearchResult>> Function(String))>[
-      ('DuckDuckGo', _duckDuckGo),
-      ('Bing', _bing),
-      ('Wikipedia', _wikipedia),
-    ];
-    for (final (name, search) in sources) {
+    final newsFuture = _googleNews(query).catchError((_) => <SearchResult>[]);
+
+    // Both engines run at once, so one that is blocked or slow doesn't add
+    // its timeout to every search; DuckDuckGo wins when both have results.
+    Future<List<SearchResult>> safe(Future<List<SearchResult>> Function(String) search) async {
       try {
-        final results = await search(query);
-        if (results.isNotEmpty) {
-          return {
-            'query': query,
-            'source': name,
-            'results': results.take(_maxResults).map((r) => r.toJson()).toList(),
-          };
-        }
+        return filterRelevant(await search(query), query);
       } catch (_) {
-        // Try the next source.
+        return const [];
       }
+    }
+
+    final engines = await Future.wait([safe(_duckDuckGo), safe(_bing)]);
+    var web = <SearchResult>[];
+    final sources = <String>[];
+    if (engines[0].isNotEmpty) {
+      web = engines[0];
+      sources.add('DuckDuckGo');
+    } else if (engines[1].isNotEmpty) {
+      web = engines[1];
+      sources.add('Bing');
+    }
+
+    final news = (await newsFuture).take(4).toList();
+    if (news.isNotEmpty) sources.add('Google News');
+
+    if (web.isEmpty) {
+      try {
+        final wiki = filterRelevant(await _wikipedia(query), query);
+        if (wiki.isNotEmpty) {
+          web = wiki;
+          sources.add('Wikipedia');
+        }
+      } catch (_) {}
+    }
+
+    final seen = <String>{};
+    final results = [
+      for (final r in [...news, ...web.take(_maxResults)])
+        if (seen.add(r.title.toLowerCase())) r,
+    ];
+    if (results.isEmpty) {
+      return {
+        'query': query,
+        'results': const [],
+        'error':
+            'Web search found nothing useful right now (no internet, or the '
+            'search services refused the request). Do not guess an answer.',
+      };
     }
     return {
       'query': query,
-      'results': const [],
-      'error':
-          'Web search is unavailable right now (no internet, or the search '
-          'services refused the request). Do not guess an answer.',
+      'sources': sources,
+      'results': [for (final r in results) r.toJson()],
     };
+  }
+
+  static const _stopWords = {
+    'a', 'an', 'the', 'is', 'are', 'was', 'were', 'be', 'been', 'of', 'in', 'on',
+    'at', 'to', 'for', 'and', 'or', 'what', 'who', 'whom', 'which', 'when', 'where',
+    'why', 'how', 'do', 'does', 'did', 'i', 'me', 'my', 'you', 'your', 'it', 'its',
+    'this', 'that', 'these', 'those', 'with', 'about', 'from', 'by', 'as', 'can',
+    'tell', 'please', 'there', 'their', 'most', 'recent', 'latest', 'current', 'now',
+    'today', 'right',
+  };
+
+  static const _irregular = {'won': 'win', 'wins': 'win', 'winning': 'win', 'winner': 'win', 'winners': 'win'};
+
+  /// Key terms of a query or text: lower-cased, stop words removed, light
+  /// stemming ("races" → "race", "won" → "win").
+  static Set<String> terms(String text) {
+    final out = <String>{};
+    for (var w in text.toLowerCase().split(RegExp(r"[^a-z0-9]+"))) {
+      if (w.length < 2 || _stopWords.contains(w)) continue;
+      w = _irregular[w] ?? w;
+      if (w.length > 4 && w.endsWith('ing')) w = w.substring(0, w.length - 3);
+      if (w.length > 3 && w.endsWith('es')) w = w.substring(0, w.length - 2);
+      if (w.length > 3 && w.endsWith('s')) w = w.substring(0, w.length - 1);
+      out.add(w);
+    }
+    return out;
+  }
+
+  /// Keeps results that share enough key terms with [query]: all of them for
+  /// one- or two-term queries, at least two otherwise. Visible for testing.
+  static List<SearchResult> filterRelevant(List<SearchResult> results, String query) {
+    final q = terms(query);
+    if (q.isEmpty) return results;
+    final needed = q.length <= 2 ? q.length : 2;
+    return [
+      for (final r in results)
+        if (terms('${r.title} ${r.snippet} ${Uri.tryParse(r.url)?.host ?? ''}').intersection(q).length >= needed) r,
+    ];
+  }
+
+  Future<List<SearchResult>> _googleNews(String query) async {
+    final body = await _get(Uri.https('news.google.com', '/rss/search', {
+      'q': query,
+      'hl': 'en-US',
+      'gl': 'US',
+      'ceid': 'US:en',
+    }));
+    return parseGoogleNewsRss(body);
+  }
+
+  /// Parses a Google News RSS feed. Visible for testing.
+  static List<SearchResult> parseGoogleNewsRss(String xml) {
+    String? tag(String item, String name) {
+      final m = RegExp('<$name[^>]*>([\\s\\S]*?)</$name>').firstMatch(item);
+      if (m == null) return null;
+      var v = m.group(1)!.trim();
+      if (v.startsWith('<![CDATA[')) v = v.substring(9, v.length - 3);
+      return _unescape(v).trim();
+    }
+
+    final out = <SearchResult>[];
+    for (final m in RegExp(r'<item>([\s\S]*?)</item>').allMatches(xml)) {
+      final item = m.group(1)!;
+      var title = tag(item, 'title');
+      final link = tag(item, 'link');
+      if (title == null || link == null) continue;
+      final source = tag(item, 'source');
+      // Titles end with " - Publisher".
+      if (source != null && title.endsWith(' - $source')) {
+        title = title.substring(0, title.length - source.length - 3);
+      }
+      DateTime? published;
+      final date = tag(item, 'pubDate');
+      if (date != null) published = _parseRfc822(date);
+      out.add(SearchResult(title, '', link, published: published, source: source));
+    }
+    return out;
+  }
+
+  static String _unescape(String s) => s
+      .replaceAll('&lt;', '<')
+      .replaceAll('&gt;', '>')
+      .replaceAll('&quot;', '"')
+      .replaceAll('&#39;', "'")
+      .replaceAll('&#x27;', "'")
+      .replaceAll('&nbsp;', ' ')
+      .replaceAll('&amp;', '&');
+
+  static const _months = {
+    'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6,
+    'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12,
+  };
+
+  /// "Sun, 23 Aug 2026 07:00:00 GMT" → DateTime (UTC).
+  static DateTime? _parseRfc822(String s) {
+    final m = RegExp(r'(\d{1,2}) (\w{3}) (\d{4}) (\d{2}):(\d{2})').firstMatch(s);
+    if (m == null) return null;
+    final month = _months[m.group(2)!.toLowerCase()];
+    if (month == null) return null;
+    return DateTime.utc(int.parse(m.group(3)!), month, int.parse(m.group(1)!),
+        int.parse(m.group(4)!), int.parse(m.group(5)!));
   }
 
   Future<String> _get(Uri uri) async {

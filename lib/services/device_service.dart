@@ -10,7 +10,6 @@ class DeviceService {
   final Battery _battery = Battery();
 
   static int? _cachedRamMB;
-  static List<String>? _cachedAbis;
 
   /// Total physical RAM in MB, cached (it never changes at runtime).
   Future<int?> totalRamMB() async {
@@ -19,45 +18,6 @@ class DeviceService {
       _cachedRamMB = await SystemInfoPlus.physicalMemory;
     } catch (_) {}
     return _cachedRamMB;
-  }
-
-  /// RAM rounded to the marketing size (a "6 GB" phone reports ~5.6 GB).
-  Future<int?> totalRamGB() async {
-    final mb = await totalRamMB();
-    return mb == null ? null : (mb / 1024).ceil();
-  }
-
-  /// CPU ABIs, e.g. [arm64-v8a, armeabi-v7a]. Used to hide `.litertlm`
-  /// models, whose runtime only ships for arm64.
-  Future<List<String>> supportedAbis() async {
-    if (_cachedAbis != null) return _cachedAbis!;
-    try {
-      if (Platform.isAndroid) {
-        _cachedAbis = (await _deviceInfo.androidInfo).supportedAbis;
-      }
-    } catch (_) {}
-    return _cachedAbis ?? const [];
-  }
-
-  Future<bool> isArm64() async {
-    if (!Platform.isAndroid) return true;
-    return (await supportedAbis()).contains('arm64-v8a');
-  }
-
-  /// Quick stats for the model picker and settings screens.
-  Future<Map<String, dynamic>> getQuickStats() async {
-    final stats = <String, dynamic>{};
-    final ramMB = await totalRamMB();
-    if (ramMB != null) {
-      stats['ramGB'] = (ramMB / 1024).ceil();
-      stats['ramMB'] = ramMB;
-    }
-    try {
-      final freeMB = await DiskSpace.getFreeDiskSpace;
-      if (freeMB != null) stats['storageFreeMB'] = freeMB;
-    } catch (_) {}
-    stats['arm64'] = await isArm64();
-    return stats;
   }
 
   /// Result of the `get_device_info` tool. Every field named in the tool's

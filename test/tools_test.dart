@@ -4,7 +4,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:local_agent/services/app_service.dart';
 import 'package:local_agent/services/llm/llm_types.dart';
 import 'package:local_agent/services/llm/providers.dart';
-import 'package:local_agent/services/model_registry.dart';
+import 'package:local_agent/services/local/device_profile.dart';
+import 'package:local_agent/services/local/model_catalog.dart';
 import 'package:local_agent/services/tools/tool_args.dart';
 import 'package:local_agent/services/tools/tool_catalog.dart';
 import 'package:local_agent/services/tools/tool_runtime.dart';
@@ -50,12 +51,11 @@ void main() {
       expect(selectToolsForBudget(99).length, kToolCatalog.length);
     });
 
-    test('every registry model gets a sane tool set', () {
-      for (final spec in ModelRegistry.all) {
-        final tools = selectToolsForBudget(spec.toolBudget);
-        expect(tools, isNotEmpty);
-        expect(tools.length, lessThanOrEqualTo(kToolCatalog.length));
-      }
+    test('a 14-tool budget covers messaging and everyday actions', () {
+      final names = selectToolsForBudget(14).map((t) => t.name).toSet();
+      expect(names, containsAll(['search_contacts', 'send_whatsapp', 'send_sms', 'make_phone_call',
+          'set_timer', 'set_alarm', 'play_media', 'search_web']));
+      expect(lookupTools().map((t) => t.name), containsAll(['search_web', 'get_weather', 'recall_memory']));
     });
   });
 
@@ -210,26 +210,39 @@ void main() {
     });
   });
 
-  group('model registry', () {
-    test('file names are unique and downloads are revision-pinned', () {
-      final files = ModelRegistry.all.map((m) => m.fileName).toList();
+  group('model catalog', () {
+    test('curated downloads are unique and revision-pinned', () {
+      final files = ModelCatalog.curated.map((m) => m.localFileName).toList();
       expect(files.toSet().length, files.length);
-      for (final m in ModelRegistry.downloadable) {
-        expect(RegExp(r'/resolve/[0-9a-f]{40}/').hasMatch(m.url), isTrue, reason: m.id);
-        expect(m.url.endsWith(Uri.parse(m.url).pathSegments.last), isTrue);
+      for (final m in ModelCatalog.curated) {
+        expect(RegExp(r'^[0-9a-f]{40}$').hasMatch(m.revision), isTrue, reason: m.id);
+        expect(m.downloadUrl, contains('/resolve/${m.revision}/'));
         expect(m.sizeBytes, greaterThan(100 * 1024 * 1024));
-        expect(m.legacy, isFalse);
+        expect(m.file, endsWith('.gguf'));
       }
     });
 
-    test('recommendations respect RAM and CPU architecture', () {
-      expect(ModelRegistry.recommendedFor(ramGB: 4, arm64: true).id, ModelRegistry.qwen3Small.id);
-      expect(ModelRegistry.recommendedFor(ramGB: 8, arm64: true).id, ModelRegistry.qwen25.id);
-      expect(ModelRegistry.recommendedFor(ramGB: 12, arm64: true).id, ModelRegistry.gemma4E2b.id);
-      expect(ModelRegistry.recommendedFor(ramGB: 16, arm64: false).arm64Only, isFalse);
-      expect(ModelRegistry.runnableOn(arm64: false).every((m) => !m.arm64Only), isTrue);
-      expect(ModelRegistry.byFileName('qwen2.5-1.5b-instruct-q8.task')?.legacy, isTrue,
-          reason: 'old downloads keep working');
+    test('recommendations follow memory and CPU class', () {
+      DeviceProfile phone(double gb, Set<String> features, {double ghz = 2.2, int big = 2}) => DeviceProfile(
+            totalRamBytes: (gb * 1024 * 1024 * 1024).round(),
+            cpuFeatures: features,
+            maxGHz: ghz,
+            bigCores: big,
+          );
+      const dotprod = {'asimddp'};
+      const i8mm = {'asimddp', 'i8mm'};
+      // 3 GB phone: only the tiny model fits.
+      expect(ModelCatalog.recommendedFor(phone(2.8, dotprod))?.id, ModelCatalog.qwen35Small.id);
+      // 6 GB mid-range: MiniCPM.
+      expect(ModelCatalog.recommendedFor(phone(5.6, dotprod))?.id, ModelCatalog.miniCpm.id);
+      // 8 GB mid-range (e.g. Dimensity 700): Gemma 4 E2B fits.
+      expect(ModelCatalog.recommendedFor(phone(7.4, dotprod))?.id, ModelCatalog.gemma4.id);
+      // 12 GB flagship: the larger Gemma.
+      expect(ModelCatalog.recommendedFor(phone(11.2, i8mm, ghz: 3.3, big: 4))?.id, ModelCatalog.gemma4Large.id);
+      // Old A53-only phone with 8 GB: no dotprod, so not Gemma.
+      expect(ModelCatalog.recommendedFor(phone(7.4, {}))?.id, isNot(ModelCatalog.gemma4.id));
+      // 2 GB: nothing fits, suggest cloud.
+      expect(ModelCatalog.recommendedFor(phone(1.8, dotprod)), isNull);
     });
   });
 }

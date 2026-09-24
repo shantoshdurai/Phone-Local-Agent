@@ -16,11 +16,15 @@ class TextToolCall {
   const TextToolCall(this.name, this.args);
 }
 
-/// Small on-device models sometimes emit a tool call the SDK parser misses —
-/// wrapped in prose, in a ```json fence, or with `arguments` instead of
-/// `parameters`. Finds the first JSON object naming one of [allowed] tools.
+/// Small on-device models sometimes emit a tool call the runtime's parser
+/// misses: wrapped in prose, in a ```json fence, with `arguments` instead of
+/// `parameters`, or as Qwen-style XML with a Python literal. Finds the first
+/// call naming one of [allowed] tools.
 TextToolCall? extractToolCallFromText(String text, Set<String> allowed) {
-  if (allowed.isEmpty || !text.contains('{')) return null;
+  if (allowed.isEmpty) return null;
+  final xml = _extractXmlToolCall(text, allowed);
+  if (xml != null) return xml;
+  if (!text.contains('{')) return null;
   for (final candidate in _jsonObjects(text)) {
     Object? decoded;
     try {
@@ -47,6 +51,38 @@ TextToolCall? extractToolCallFromText(String text, Set<String> allowed) {
     return TextToolCall(name, args is Map ? Map<String, dynamic>.from(args) : {});
   }
   return null;
+}
+
+/// Qwen3.5 / Qwen3-Coder style calls, which a model sometimes writes as text
+/// when a value doesn't match the schema (e.g. Python's `True`):
+/// `<function=set_alarm><parameter=hour>7</parameter></function>`.
+TextToolCall? _extractXmlToolCall(String text, Set<String> allowed) {
+  final fn = RegExp(r'<function=([A-Za-z0-9_\-]+)>([\s\S]*?)(?:</function>|$)').firstMatch(text);
+  if (fn == null || !allowed.contains(fn.group(1))) return null;
+  final args = <String, dynamic>{};
+  for (final p in RegExp(r'<parameter=([A-Za-z0-9_\-]+)>([\s\S]*?)</parameter>').allMatches(fn.group(2)!)) {
+    args[p.group(1)!] = coerceScalar(p.group(2)!.trim());
+  }
+  return TextToolCall(fn.group(1)!, args);
+}
+
+/// "True"/"false" → bool, "42" → int, "4.5" → double, JSON → decoded,
+/// anything else stays a string.
+Object? coerceScalar(String raw) {
+  final lower = raw.toLowerCase();
+  if (lower == 'true') return true;
+  if (lower == 'false') return false;
+  if (lower == 'null' || lower == 'none') return null;
+  final i = int.tryParse(raw);
+  if (i != null) return i;
+  final d = double.tryParse(raw);
+  if (d != null) return d;
+  if ((raw.startsWith('{') && raw.endsWith('}')) || (raw.startsWith('[') && raw.endsWith(']'))) {
+    try {
+      return jsonDecode(raw);
+    } catch (_) {}
+  }
+  return raw;
 }
 
 /// Balanced `{...}` substrings, outermost first, respecting JSON strings.
@@ -97,8 +133,8 @@ bool looksLikeToolCallStart(String text) {
 }
 
 /// The part of streamed text that is safe to show: everything before the
-/// first sign of tool-call markup (Gemma 4 on flutter_gemma 0.15 streams its
-/// raw `<|tool_call>` tokens into the text channel).
+/// first sign of tool-call markup. Some chat formats (Qwen3.5's XML calls)
+/// stream the raw call into the text channel before it is parsed.
 String visiblePrefix(String text) {
   if (looksLikeToolCallStart(text)) return '';
   const markers = [
@@ -126,10 +162,25 @@ String cleanModelText(String text) {
   t = t.replaceAll(RegExp(r'<think>[\s\S]*?</think>'), '');
   t = t.replaceAll(RegExp(r'<tool_call>[\s\S]*?</tool_call>'), '');
   t = t.replaceAll(RegExp(r'<\|tool_call>[\s\S]*?<tool_call\|>'), '');
+  t = t.replaceAll(RegExp(r'<function=[\s\S]*?</function>'), '');
+  t = t.replaceAll(RegExp(r'</?tool_call>'), '');
   t = t.replaceAll(
       RegExp(r'<\|?(?:im_end|im_start|end_of_turn|start_of_turn|eot_id|end)\|?>'), '');
   t = t.replaceAll('<end_of_turn>', '').replaceAll('<start_of_turn>', '');
   return t.trim();
+}
+
+/// A reply that announces an action instead of doing it ("I will try again
+/// with a better query", "Let me search for that"). Small models sometimes
+/// stop there without emitting the tool call.
+bool promisesAction(String text) {
+  final t = text.toLowerCase();
+  if (t.length > 400) return false;
+  return RegExp(
+    r"\b(?:i(?:'ll| will| am going to|'m going to| need to| should)|let me|allow me to)\s+"
+    r"(?:now\s+|quickly\s+|first\s+)?"
+    r"(?:try|search|look|check|find|do|get|call|open|set|use|run|fetch|query|see)\b",
+  ).hasMatch(t);
 }
 
 /// Degenerate output from an overloaded small model: empty, whitespace, a
