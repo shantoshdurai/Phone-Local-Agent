@@ -1,38 +1,38 @@
-import 'package:sqflite/sqflite.dart';
-import 'package:path/path.dart';
-import 'embedding/chat_memory.dart';
-import 'file_service.dart';
+import 'dart:convert';
 
+import 'package:path/path.dart';
+import 'package:sqflite/sqflite.dart';
+
+/// Chat history persistence (sessions + messages).
 class DatabaseService {
   static final DatabaseService _instance = DatabaseService._internal();
   factory DatabaseService() => _instance;
   DatabaseService._internal();
 
+  /// Oldest sessions beyond this are pruned. The old limit of 5 silently
+  /// deleted users' chats.
+  static const int maxSessions = 50;
+
   Database? _database;
 
   Future<Database> get database async {
-    if (_database != null) return _database!;
-    _database = await _initDatabase();
-    return _database!;
+    return _database ??= await _initDatabase();
   }
 
   Future<Database> _initDatabase() async {
-    String path = join(await getDatabasesPath(), 'agent_memory.db');
-    return await openDatabase(
+    final path = join(await getDatabasesPath(), 'agent_memory.db');
+    return openDatabase(
       path,
-      version: 4,
+      version: 5,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
     );
   }
 
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
-    if (oldVersion < 2) {
-      await db.execute('ALTER TABLE files ADD COLUMN last_accessed TEXT');
-    }
     if (oldVersion < 3) {
       await db.execute('''
-        CREATE TABLE chat_history (
+        CREATE TABLE IF NOT EXISTS chat_history (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           role TEXT,
           content TEXT,
@@ -42,7 +42,7 @@ class DatabaseService {
     }
     if (oldVersion < 4) {
       await db.execute('''
-        CREATE TABLE sessions (
+        CREATE TABLE IF NOT EXISTS sessions (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           title TEXT,
           created_at TEXT
@@ -50,31 +50,28 @@ class DatabaseService {
       ''');
       await db.execute('ALTER TABLE chat_history ADD COLUMN session_id INTEGER');
     }
+    if (oldVersion < 5) {
+      await db.execute('ALTER TABLE chat_history ADD COLUMN meta TEXT');
+      // The old app saved its canned greeting into every chat, which was then
+      // replayed to the model as if it had said it.
+      await db.delete('chat_history', where: 'role = ? AND content LIKE ?', whereArgs: [
+        'assistant',
+        "Hello! I'm your local AI agent. I have loaded my tools.%",
+      ]);
+    }
   }
 
   Future<void> _onCreate(Database db, int version) async {
-    await db.execute('''
-      CREATE TABLE files (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        path TEXT UNIQUE,
-        name TEXT,
-        type TEXT,
-        size INTEGER,
-        modified_date TEXT,
-        last_accessed TEXT
-      )
-    ''');
-
     await db.execute('''
       CREATE TABLE chat_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         role TEXT,
         content TEXT,
         timestamp TEXT,
-        session_id INTEGER
+        session_id INTEGER,
+        meta TEXT
       )
     ''');
-
     await db.execute('''
       CREATE TABLE sessions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -82,88 +79,76 @@ class DatabaseService {
         created_at TEXT
       )
     ''');
-
-    await db.execute('''
-      CREATE TABLE device_state (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        key TEXT UNIQUE,
-        value TEXT,
-        timestamp TEXT
-      )
-    ''');
-
-    await db.execute('''
-      CREATE TABLE memory (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_query TEXT,
-        agent_action TEXT,
-        result TEXT,
-        timestamp TEXT
-      )
-    ''');
+    await db.execute('CREATE INDEX idx_history_session ON chat_history(session_id)');
   }
 
-  // --- Files Methods ---
-  Future<void> insertFiles(List<FileMetadata> files) async {
-    final db = await database;
-    Batch batch = db.batch();
-    for (var file in files) {
-      batch.insert(
-        'files',
-        file.toMap(),
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
-    }
-    await batch.commit(noResult: true);
-  }
-
-  Future<void> saveMessage(String role, String content, int sessionId) async {
+  Future<void> saveMessage(
+    String role,
+    String content,
+    int sessionId, {
+    Map<String, dynamic>? meta,
+  }) async {
     final db = await database;
     await db.insert('chat_history', {
       'role': role,
       'content': content,
       'timestamp': DateTime.now().toIso8601String(),
       'session_id': sessionId,
+      'meta': meta == null || meta.isEmpty ? null : jsonEncode(meta),
     });
-    // Mirror the message into ChatMemory so the embedding index stays in
-    // sync with the persisted history. Done here (not at each callsite)
-    // because saveMessage is called from chat_screen / voice_mode /
-    // agent_service / gemini_service — a single hook here covers all of
-    // them without their authors needing to know about RAG. Fire and
-    // forget; embedding happens in the background and never blocks the
-    // db write or the chat turn.
-    if (role == 'user' || role == 'assistant') {
-      // ignore: discarded_futures
-      ChatMemory.instance.remember(sessionId, content, role == 'user');
-    }
   }
 
   Future<List<Map<String, dynamic>>> getChatHistory(int sessionId) async {
     final db = await database;
-    return await db.query('chat_history', 
-      where: 'session_id = ?', 
-      whereArgs: [sessionId], 
-      orderBy: 'timestamp ASC'
+    return db.query(
+      'chat_history',
+      where: 'session_id = ?',
+      whereArgs: [sessionId],
+      orderBy: 'id ASC',
     );
   }
 
-  Future<void> clearChatHistory() async {
-    final db = await database;
-    await db.delete('chat_history');
-    await db.delete('sessions');
+  static Map<String, dynamic> decodeMeta(Object? raw) {
+    if (raw is! String || raw.isEmpty) return const {};
+    try {
+      final decoded = jsonDecode(raw);
+      return decoded is Map<String, dynamic> ? decoded : const {};
+    } catch (_) {
+      return const {};
+    }
   }
 
-  // Session Management
+  /// (user, assistant) pairs for replaying a session to a model. Error
+  /// replies are skipped so a failure isn't fed back as conversation.
+  Future<List<(String, String)>> getExchanges(int sessionId) async {
+    final rows = await getChatHistory(sessionId);
+    final pairs = <(String, String)>[];
+    String? pendingUser;
+    for (final row in rows) {
+      final role = row['role'] as String?;
+      final content = (row['content'] as String?)?.trim() ?? '';
+      if (role == 'user') {
+        pendingUser = content;
+      } else if (role == 'assistant' && pendingUser != null) {
+        final meta = decodeMeta(row['meta']);
+        if (meta['error'] != true && content.isNotEmpty) {
+          pairs.add((pendingUser, content));
+        }
+        pendingUser = null;
+      }
+    }
+    return pairs;
+  }
+
   Future<int> createSession(String title) async {
     final db = await database;
-    // Check if we need to cleanup (limit to 5)
-    final sessions = await db.query('sessions', orderBy: 'created_at ASC');
-    if (sessions.length >= 5) {
-      final oldestId = sessions.first['id'] as int;
-      await deleteSession(oldestId);
+    final sessions = await db.query('sessions', orderBy: 'id ASC');
+    if (sessions.length >= maxSessions) {
+      for (final s in sessions.take(sessions.length - maxSessions + 1)) {
+        await deleteSession(s['id'] as int);
+      }
     }
-
-    return await db.insert('sessions', {
+    return db.insert('sessions', {
       'title': title,
       'created_at': DateTime.now().toIso8601String(),
     });
@@ -171,7 +156,20 @@ class DatabaseService {
 
   Future<List<Map<String, dynamic>>> getSessions() async {
     final db = await database;
-    return await db.query('sessions', orderBy: 'created_at DESC');
+    return db.query('sessions', orderBy: 'id DESC');
+  }
+
+  Future<Map<String, dynamic>?> getSession(int sessionId) async {
+    final db = await database;
+    final rows = await db.query('sessions', where: 'id = ?', whereArgs: [sessionId]);
+    return rows.isEmpty ? null : rows.first;
+  }
+
+  Future<int> messageCount(int sessionId) async {
+    final db = await database;
+    final result = await db.rawQuery(
+        'SELECT COUNT(*) AS n FROM chat_history WHERE session_id = ?', [sessionId]);
+    return (result.first['n'] as int?) ?? 0;
   }
 
   Future<void> deleteSession(int sessionId) async {
@@ -180,64 +178,24 @@ class DatabaseService {
     await db.delete('chat_history', where: 'session_id = ?', whereArgs: [sessionId]);
   }
 
+  /// Removes sessions that never got a message (abandoned "New Chat"s).
+  Future<void> deleteEmptySessions({int? except}) async {
+    final db = await database;
+    await db.rawDelete(
+      'DELETE FROM sessions WHERE id NOT IN (SELECT DISTINCT session_id FROM chat_history WHERE session_id IS NOT NULL)'
+      '${except != null ? ' AND id != ?' : ''}',
+      [if (except != null) except],
+    );
+  }
+
   Future<void> updateSessionTitle(int sessionId, String title) async {
     final db = await database;
     await db.update('sessions', {'title': title}, where: 'id = ?', whereArgs: [sessionId]);
   }
 
-  Future<List<Map<String, dynamic>>> searchFiles(String query) async {
+  Future<void> clearAll() async {
     final db = await database;
-    return await db.query(
-      'files',
-      where: 'name LIKE ?',
-      whereArgs: ['%$query%'],
-    );
-  }
-
-  // --- Device State Methods ---
-  Future<void> updateDeviceState(Map<String, dynamic> state) async {
-    final db = await database;
-    Batch batch = db.batch();
-    state.forEach((key, value) {
-      batch.insert(
-        'device_state',
-        {
-          'key': key,
-          'value': value.toString(),
-          'timestamp': DateTime.now().toIso8601String(),
-        },
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
-    });
-    await batch.commit(noResult: true);
-  }
-
-  Future<Map<String, dynamic>> getDeviceState() async {
-    final db = await database;
-    final List<Map<String, dynamic>> maps = await db.query('device_state');
-    return {for (var item in maps) item['key'] as String: item['value']};
-  }
-
-  // --- Memory Methods ---
-  Future<void> insertMemory(String query, String action, String result) async {
-    final db = await database;
-    await db.insert(
-      'memory',
-      {
-        'user_query': query,
-        'agent_action': action,
-        'result': result,
-        'timestamp': DateTime.now().toIso8601String(),
-      },
-    );
-  }
-
-  Future<List<Map<String, dynamic>>> getRecentMemory(int limit) async {
-    final db = await database;
-    return await db.query(
-      'memory',
-      orderBy: 'timestamp DESC',
-      limit: limit,
-    );
+    await db.delete('chat_history');
+    await db.delete('sessions');
   }
 }

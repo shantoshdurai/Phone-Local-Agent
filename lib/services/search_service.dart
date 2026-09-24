@@ -1,142 +1,201 @@
 import 'dart:convert';
-import 'package:http/http.dart' as http;
+
+import 'package:html/dom.dart';
 import 'package:html/parser.dart' show parse;
+import 'package:http/http.dart' as http;
 
+class SearchResult {
+  final String title;
+  final String snippet;
+  final String url;
+  const SearchResult(this.title, this.snippet, this.url);
+
+  Map<String, dynamic> toJson() =>
+      {'title': title, 'snippet': snippet, 'url': url};
+}
+
+/// Keyless web search for the `search_web` tool.
+///
+/// Tries several free sources in order and returns real result snippets, or
+/// an honest failure. The old implementation returned "Could not find a
+/// direct answer" for most queries (DuckDuckGo's instant-answer API is empty
+/// for anything that isn't an encyclopedia topic), which pushed the model
+/// into making answers up.
 class SearchService {
-  /// Performs a web search using multiple strategies.
+  static const _userAgent =
+      'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 '
+      '(KHTML, like Gecko) Chrome/128.0 Mobile Safari/537.36';
+  static const _timeout = Duration(seconds: 8);
+  static const _maxResults = 5;
+
+  final http.Client Function() _clientFactory;
+
+  SearchService({http.Client Function()? clientFactory})
+      : _clientFactory = clientFactory ?? http.Client.new;
+
   Future<Map<String, dynamic>> searchWeb(String query) async {
-    // Strategy 1: DuckDuckGo Instant Answer
-    try {
-      final ddgResult = await _searchDuckDuckGo(query);
-      if (ddgResult != null && ddgResult.isNotEmpty) {
-        return {
-          'success': true,
-          'answer': ddgResult,
-          'source': 'DuckDuckGo',
-        };
+    final sources = <(String, Future<List<SearchResult>> Function(String))>[
+      ('DuckDuckGo', _duckDuckGo),
+      ('Bing', _bing),
+      ('Wikipedia', _wikipedia),
+    ];
+    for (final (name, search) in sources) {
+      try {
+        final results = await search(query);
+        if (results.isNotEmpty) {
+          return {
+            'query': query,
+            'source': name,
+            'results': results.take(_maxResults).map((r) => r.toJson()).toList(),
+          };
+        }
+      } catch (_) {
+        // Try the next source.
       }
-    } catch (_) {}
-
-    // Strategy 2: Google Search Scraper
-    try {
-      final googleResult = await _searchGoogle(query);
-      if (googleResult != null && googleResult.isNotEmpty) {
-        return {
-          'success': true,
-          'answer': googleResult,
-          'source': 'Google',
-        };
-      }
-    } catch (_) {}
-
-    // Strategy 3: Wikipedia API (for factual queries)
-    try {
-      final wikiResult = await _searchWikipedia(query);
-      if (wikiResult != null && wikiResult.isNotEmpty) {
-        return {
-          'success': true,
-          'answer': wikiResult,
-          'source': 'Wikipedia',
-        };
-      }
-    } catch (_) {}
-
-    // Strategy 4: No result found
+    }
     return {
-      'success': false,
-      'answer': 'Could not find a direct answer.',
-      'googleUrl': 'https://www.google.com/search?q=${Uri.encodeComponent(query)}',
+      'query': query,
+      'results': const [],
+      'error':
+          'Web search is unavailable right now (no internet, or the search '
+          'services refused the request). Do not guess an answer.',
     };
   }
 
-  Future<String?> _searchDuckDuckGo(String query) async {
-    final url = Uri.parse(
-        'https://api.duckduckgo.com/?q=${Uri.encodeComponent(query)}&format=json&no_html=1');
-    final response = await http.get(url).timeout(const Duration(seconds: 5));
+  Future<String> _get(Uri uri) async {
+    final client = _clientFactory();
+    try {
+      final res = await client.get(uri, headers: {
+        'user-agent': _userAgent,
+        'accept-language': 'en-US,en;q=0.8',
+      }).timeout(_timeout);
+      if (res.statusCode != 200) {
+        throw StateError('HTTP ${res.statusCode}');
+      }
+      return utf8.decode(res.bodyBytes, allowMalformed: true);
+    } finally {
+      client.close();
+    }
+  }
 
-    if (response.statusCode == 200) {
-      final data = jsonDecode(response.body);
-      final abstract = data['AbstractText'] as String? ?? '';
-      if (abstract.isNotEmpty) return abstract;
+  Future<List<SearchResult>> _duckDuckGo(String query) async {
+    final body = await _get(Uri.https('html.duckduckgo.com', '/html/', {'q': query}));
+    return parseDuckDuckGo(body);
+  }
+
+  Future<List<SearchResult>> _bing(String query) async {
+    final body = await _get(
+        Uri.https('www.bing.com', '/search', {'q': query, 'setlang': 'en'}));
+    return parseBing(body);
+  }
+
+  Future<List<SearchResult>> _wikipedia(String query) async {
+    final search = jsonDecode(await _get(Uri.https('en.wikipedia.org', '/w/api.php', {
+      'action': 'query',
+      'list': 'search',
+      'srsearch': query,
+      'format': 'json',
+      'srlimit': '3',
+      'utf8': '1',
+    })));
+    final hits = (search['query']?['search'] as List?) ?? const [];
+    final out = <SearchResult>[];
+    for (final hit in hits.take(2)) {
+      final title = '${hit['title']}';
+      try {
+        final summary = jsonDecode(await _get(Uri.https('en.wikipedia.org',
+            '/api/rest_v1/page/summary/${Uri.encodeComponent(title)}')));
+        final extract = '${summary['extract'] ?? ''}'.trim();
+        if (extract.isEmpty) continue;
+        out.add(SearchResult(
+          title,
+          _clip(extract, 500),
+          'https://en.wikipedia.org/wiki/${Uri.encodeComponent(title.replaceAll(' ', '_'))}',
+        ));
+      } catch (_) {}
+    }
+    return out;
+  }
+
+  /// Parses html.duckduckgo.com results, skipping ads. Visible for testing.
+  static List<SearchResult> parseDuckDuckGo(String body) {
+    final doc = parse(body);
+    final out = <SearchResult>[];
+    for (final result in doc.querySelectorAll('.result')) {
+      if (result.classes.contains('result--ad')) continue;
+      final link = result.querySelector('a.result__a');
+      if (link == null) continue;
+      final url = _ddgTarget(link.attributes['href'] ?? '');
+      final title = _text(link);
+      final snippet = _text(result.querySelector('.result__snippet'));
+      if (url == null || title.isEmpty) continue;
+      out.add(SearchResult(title, _clip(snippet, 300), url));
+    }
+    return out;
+  }
+
+  /// DDG wraps result links as `//duckduckgo.com/l/?uddg=<encoded target>`.
+  static String? _ddgTarget(String href) {
+    if (href.startsWith('//')) href = 'https:$href';
+    final uri = Uri.tryParse(href);
+    if (uri == null) return null;
+    final target = uri.queryParameters['uddg'];
+    if (target != null && target.isNotEmpty) return target;
+    if (uri.hasScheme && uri.host.isNotEmpty && !uri.host.contains('duckduckgo.com')) {
+      return href;
     }
     return null;
   }
 
-  Future<String?> _searchGoogle(String query) async {
-    final url = Uri.parse('https://www.google.com/search?q=${Uri.encodeComponent(query)}&hl=en');
-    final response = await http.get(url, headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    }).timeout(const Duration(seconds: 8));
-
-    if (response.statusCode == 200) {
-      final document = parse(response.body);
-      
-      // Try to find the featured snippet box (knowledge panel, direct answer)
-      final featuredSnippet = document.querySelector('.BNeawe.iBp4i.AP7Wnd');
-      if (featuredSnippet != null && featuredSnippet.text.isNotEmpty) {
-         return featuredSnippet.text;
-      }
-      
-      final featuredSnippet2 = document.querySelector('.Z0LcW');
-      if (featuredSnippet2 != null && featuredSnippet2.text.isNotEmpty) {
-         return featuredSnippet2.text;
-      }
-
-      // Extract text from search result descriptions
-      final snippets = document.querySelectorAll('.VwiC3b');
-      if (snippets.isNotEmpty) {
-        return snippets.first.text;
-      }
-      
-      // Generic snippet fallback
-      final genericSnippets = document.querySelectorAll('.BNeawe.s3v9rd.AP7Wnd');
-      for (var element in genericSnippets) {
-         if (element.text.isNotEmpty && !element.text.contains('...') && element.text.length > 20) {
-             return element.text;
-         }
-      }
+  /// Parses Bing results. Visible for testing.
+  static List<SearchResult> parseBing(String body) {
+    final doc = parse(body);
+    final out = <SearchResult>[];
+    for (final result in doc.querySelectorAll('li.b_algo')) {
+      final heading = result.querySelector('h2');
+      final link = result.querySelector('.b_algoheader a[href]') ??
+          result.querySelector('h2 a[href]');
+      final url = _bingTarget(link?.attributes['href'] ?? '');
+      final title = _text(heading);
+      final snippet = _text(result.querySelector('.b_caption p'));
+      if (url == null || title.isEmpty) continue;
+      out.add(SearchResult(title, _clip(snippet, 300), url));
     }
-    return null;
+    return out;
   }
 
-  Future<String?> _searchWikipedia(String query) async {
-    final searchUrl = Uri.parse(
-        'https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${Uri.encodeComponent(query)}&format=json&srlimit=1');
-    final searchResp = await http.get(searchUrl).timeout(const Duration(seconds: 5));
-
-    if (searchResp.statusCode == 200) {
-      final searchData = jsonDecode(searchResp.body);
-      final results = searchData['query']?['search'] as List?;
-      if (results != null && results.isNotEmpty) {
-        final title = results[0]['title'] as String;
-
-        final summaryUrl = Uri.parse(
-            'https://en.wikipedia.org/api/rest_v1/page/summary/${Uri.encodeComponent(title)}');
-        final summaryResp = await http.get(summaryUrl, headers: {
-          'User-Agent': 'LocalAgent/1.0',
-        }).timeout(const Duration(seconds: 5));
-
-        if (summaryResp.statusCode == 200) {
-          final summaryData = jsonDecode(summaryResp.body);
-          final extract = summaryData['extract'] as String? ?? '';
-          if (extract.isNotEmpty) {
-            return extract.length > 500 ? '${extract.substring(0, 500)}...' : extract;
-          }
+  /// Bing sometimes routes links through `/ck/a?...&u=a1<base64url(target)>`.
+  static String? _bingTarget(String href) {
+    final uri = Uri.tryParse(href);
+    if (uri == null || !uri.hasScheme) return null;
+    if (uri.host.endsWith('bing.com') && uri.path.startsWith('/ck/')) {
+      final u = uri.queryParameters['u'];
+      if (u != null && u.startsWith('a1')) {
+        try {
+          var b64 = u.substring(2);
+          b64 += '=' * ((4 - b64.length % 4) % 4);
+          return utf8.decode(base64Url.decode(b64));
+        } catch (_) {
+          return null;
         }
       }
+      return null;
     }
-    return null;
+    return href;
   }
+
+  static String _text(Element? e) =>
+      (e?.text ?? '').replaceAll(RegExp(r'\s+'), ' ').trim();
+
+  static String _clip(String s, int max) =>
+      s.length <= max ? s : '${s.substring(0, max).trimRight()}…';
 
   Future<Map<String, dynamic>> getPublicIP() async {
     try {
-      final response = await http.get(Uri.parse('https://api.ipify.org?format=json'));
-      if (response.statusCode == 200) {
-        return jsonDecode(response.body);
-      }
-      return {'error': 'Failed to fetch IP'};
-    } catch (e) {
-      return {'error': e.toString()};
-    }
+      final body = await _get(Uri.https('api.ipify.org', '/', {'format': 'json'}));
+      final ip = jsonDecode(body)['ip'];
+      if (ip is String && ip.isNotEmpty) return {'ip': ip};
+    } catch (_) {}
+    return {'error': 'Could not look up the public IP (no internet?).'};
   }
 }

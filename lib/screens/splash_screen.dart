@@ -1,179 +1,171 @@
 import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-import '../services/agent_service.dart';
-import 'chat_screen.dart';
-import 'home_screen.dart';
 
-/// Dedicated splash route. Owns the heavy model-load step so that ChatScreen
-/// only mounts after FlutterGemma has finished initialising — that way the
-/// chat UI doesn't have to compete with the platform thread for the first
-/// few seconds of render time.
+import '../app/launch.dart';
+import '../services/agent/agent_service.dart';
+import '../theme/app_theme.dart';
+import '../widgets/design_components.dart';
+import 'api_key_setup_screen.dart';
+import 'chat_screen.dart';
+import 'model_picker_screen.dart';
+
+/// Loads the chosen backend with visible progress, then opens the chat.
 class SplashScreen extends StatefulWidget {
-  final String modelFileName;
-  const SplashScreen({super.key, required this.modelFileName});
+  final AgentTarget target;
+  const SplashScreen({super.key, required this.target});
 
   @override
   State<SplashScreen> createState() => _SplashScreenState();
 }
 
 class _SplashScreenState extends State<SplashScreen> {
+  final AgentService _agent = AgentService();
   String? _error;
-  String _stage = 'Loading model';
+  String _stage = 'Starting';
   int _elapsed = 0;
   Timer? _ticker;
-  StreamSubscription? _statusSub;
+  StreamSubscription<AgentEvent>? _eventsSub;
 
   @override
   void initState() {
     super.initState();
-    _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (mounted) setState(() => _elapsed += 1);
+    _eventsSub = _agent.events.listen((e) {
+      if (e is AgentStatus && e.text.isNotEmpty && mounted) {
+        setState(() => _stage = e.text.replaceAll('…', '').trim());
+      }
     });
-    // Mirror AgentService status text (e.g. "Warming up...") so the user
-    // sees that the load is making progress, not stalled.
-    _statusSub = AgentService().statusStream.listen((s) {
-      if (!mounted || s.isEmpty) return;
-      setState(() => _stage = s.replaceAll('...', '').trim());
-    });
-    // Defer one frame so the spinner paints before native init starts.
-    WidgetsBinding.instance.addPostFrameCallback((_) => _loadModel());
+    WidgetsBinding.instance.addPostFrameCallback((_) => _load());
   }
 
   @override
   void dispose() {
     _ticker?.cancel();
-    _statusSub?.cancel();
+    _eventsSub?.cancel();
     super.dispose();
   }
 
-  Future<void> _loadModel() async {
+  Future<void> _load() async {
+    setState(() {
+      _error = null;
+      _elapsed = 0;
+      _stage = widget.target.isCloud ? 'Connecting' : 'Loading ${widget.target.label}';
+    });
+    _ticker?.cancel();
+    _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() => _elapsed++);
+    });
     try {
-      await AgentService().initialize(widget.modelFileName);
+      await _agent.activate(widget.target);
       if (!mounted) return;
-      // Cross-fade into chat so the transition feels seamless.
-      Navigator.of(context).pushReplacement(
-        PageRouteBuilder(
-          transitionDuration: const Duration(milliseconds: 220),
-          pageBuilder: (_, __, ___) =>
-              ChatScreen(modelFileName: widget.modelFileName),
-          transitionsBuilder: (_, anim, __, child) =>
-              FadeTransition(opacity: anim, child: child),
-        ),
-      );
+      _ticker?.cancel();
+      Navigator.of(context).pushReplacement(fadeRoute(const ChatScreen()));
     } catch (e) {
-      if (mounted) setState(() => _error = e.toString());
+      _ticker?.cancel();
+      if (mounted) setState(() => _error = AgentService.friendlyError(e));
     }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.black,
+      backgroundColor: AppTheme.bg,
       body: SafeArea(
         child: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (_error == null) ...[
-                SizedBox(
-                  width: 22,
-                  height: 22,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 1.8,
-                    color: Colors.white.withValues(alpha: 0.45),
-                  ),
-                ),
-                const SizedBox(height: 18),
-                Text(
-                  '$_stage…',
-                  style: GoogleFonts.outfit(
-                    color: Colors.white70,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withValues(alpha: 0.06),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Text(
-                    '${_elapsed}s',
-                    style: GoogleFonts.jetBrainsMono(
-                      color: Colors.white.withValues(alpha: 0.55),
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      letterSpacing: 0.5,
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'Loading on CPU. First open is a few seconds; later opens are instant.',
-                  textAlign: TextAlign.center,
-                  style: GoogleFonts.outfit(
-                    color: Colors.white.withValues(alpha: 0.32),
-                    fontSize: 11,
-                  ),
-                ),
-              ] else
-                _buildError(),
-            ],
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 32),
+            child: _error == null ? _progress() : _failure(),
           ),
         ),
       ),
     );
   }
 
-  Widget _buildError() {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 36),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(Icons.error_outline_rounded,
-              color: Colors.white.withValues(alpha: 0.5), size: 32),
+  Widget _progress() {
+    final isLocal = !widget.target.isCloud;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const BrandMark.large(),
+        const SizedBox(height: 28),
+        SizedBox(
+          width: 22,
+          height: 22,
+          child: CircularProgressIndicator(
+            strokeWidth: 1.8,
+            color: Colors.white.withValues(alpha: 0.5),
+          ),
+        ),
+        const SizedBox(height: 18),
+        Text(
+          '$_stage…',
+          textAlign: TextAlign.center,
+          style: GoogleFonts.interTight(
+            color: AppTheme.ink,
+            fontSize: 15,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+        const SizedBox(height: 10),
+        if (isLocal) ...[
+          Pill('${_elapsed}s', style: PillStyle.surface, fontSize: 11),
           const SizedBox(height: 14),
           Text(
-            'Couldn\'t load the model',
-            style: GoogleFonts.outfit(
-              color: Colors.white,
-              fontSize: 16,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            _error!,
+            _elapsed < 20
+                ? 'Loading the model into memory. The first load takes longest.'
+                : 'Still loading — big models can take a minute on mid-range phones.',
             textAlign: TextAlign.center,
-            style: GoogleFonts.outfit(
-              color: Colors.white54,
-              fontSize: 12,
-              height: 1.4,
-            ),
-          ),
-          const SizedBox(height: 20),
-          TextButton(
-            onPressed: () {
-              Navigator.of(context).pushAndRemoveUntil(
-                MaterialPageRoute(builder: (_) => const HomeScreen()),
-                (route) => false,
-              );
-            },
-            child: Text(
-              'Back to home',
-              style: GoogleFonts.outfit(
-                color: const Color(0xFF93C5FD),
-                fontWeight: FontWeight.w600,
-              ),
-            ),
+            style: GoogleFonts.interTight(color: AppTheme.muted, fontSize: 12, height: 1.4),
           ),
         ],
-      ),
+      ],
+    );
+  }
+
+  Widget _failure() {
+    final target = widget.target;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const Icon(Icons.error_outline_rounded, color: AppTheme.ink2, size: 34),
+        const SizedBox(height: 14),
+        Text(
+          target.isCloud ? 'Couldn\'t connect' : 'Couldn\'t load the model',
+          style: GoogleFonts.interTight(
+            color: AppTheme.ink,
+            fontSize: 18,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          _error!,
+          textAlign: TextAlign.center,
+          style: GoogleFonts.interTight(color: AppTheme.ink2, fontSize: 13, height: 1.45),
+        ),
+        if (!target.isCloud) ...[
+          const SizedBox(height: 10),
+          Text(
+            'If this keeps happening, the phone may not have enough free memory '
+            'for this model. Close other apps or pick a smaller model.',
+            textAlign: TextAlign.center,
+            style: GoogleFonts.interTight(color: AppTheme.muted, fontSize: 12, height: 1.4),
+          ),
+        ],
+        const SizedBox(height: 24),
+        PrimaryButton(onPressed: _load, label: 'Try again'),
+        const SizedBox(height: 10),
+        SecondaryButton(
+          onPressed: () => resetTo(
+            context,
+            target is CloudTarget
+                ? ApiKeySetupScreen(initialProvider: target.config.providerId)
+                : const ModelPickerScreen(),
+          ),
+          label: target.isCloud ? 'Check API key & model' : 'Choose another model',
+        ),
+      ],
     );
   }
 }

@@ -1,15 +1,17 @@
 import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:url_launcher/url_launcher.dart';
+
 import '../models/chat_message.dart';
 import '../theme/app_theme.dart';
 import 'design_components.dart';
 
 /// Chat bubble — user messages render as a grey rounded pill on the right,
-/// agent messages render as plain text under a sparkle icon, mirroring the
-/// design's `.msg-user` / `.msg-agent` styles.
+/// agent messages render as plain text under a sparkle icon.
 class MessageBubble extends StatefulWidget {
   final ChatMessage message;
 
@@ -35,16 +37,10 @@ class _MessageBubbleState extends State<MessageBubble>
       duration: const Duration(milliseconds: 240),
       value: widget.message.skipEntrance ? 1.0 : 0.0,
     );
-    _opacity = Tween<double>(begin: 0.0, end: 1.0).animate(
-      CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic),
-    );
+    _opacity = CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic);
     _slide = Tween<Offset>(begin: const Offset(0, 0.12), end: Offset.zero)
-        .animate(
-      CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic),
-    );
-    if (!widget.message.skipEntrance) {
-      _controller.forward();
-    }
+        .animate(CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic));
+    if (!widget.message.skipEntrance) _controller.forward();
   }
 
   @override
@@ -67,6 +63,26 @@ class _MessageBubbleState extends State<MessageBubble>
     );
   }
 
+  Widget _image(String path, {double width = 220}) {
+    final file = File(path);
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(12),
+      child: Image.file(
+        file,
+        width: width,
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => Container(
+          width: width,
+          height: 64,
+          color: AppTheme.surface,
+          alignment: Alignment.center,
+          child: Text('Image unavailable',
+              style: GoogleFonts.interTight(color: AppTheme.muted, fontSize: 12)),
+        ),
+      ),
+    );
+  }
+
   Widget _userMessage() {
     return Row(
       mainAxisAlignment: MainAxisAlignment.end,
@@ -76,9 +92,7 @@ class _MessageBubbleState extends State<MessageBubble>
           child: GestureDetector(
             onLongPress: _copy,
             child: ConstrainedBox(
-              constraints: BoxConstraints(
-                maxWidth: MediaQuery.of(context).size.width * 0.8,
-              ),
+              constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.8),
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                 decoration: BoxDecoration(
@@ -90,24 +104,13 @@ class _MessageBubbleState extends State<MessageBubble>
                   children: [
                     if (message.imagePath != null)
                       Padding(
-                        padding: const EdgeInsets.only(bottom: 8),
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(12),
-                          child: Image.file(
-                            File(message.imagePath!),
-                            width: 220,
-                            fit: BoxFit.cover,
-                          ),
-                        ),
+                        padding: EdgeInsets.only(bottom: message.text.isEmpty ? 0 : 8),
+                        child: _image(message.imagePath!),
                       ),
                     if (message.text.isNotEmpty)
                       Text(
                         message.text,
-                        style: GoogleFonts.interTight(
-                          fontSize: 15,
-                          height: 1.5,
-                          color: AppTheme.ink,
-                        ),
+                        style: GoogleFonts.interTight(fontSize: 15, height: 1.5, color: AppTheme.ink),
                       ),
                   ],
                 ),
@@ -123,9 +126,11 @@ class _MessageBubbleState extends State<MessageBubble>
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Padding(
-          padding: EdgeInsets.only(right: 12, top: 2),
-          child: SparkleIcon(size: 20),
+        Padding(
+          padding: const EdgeInsets.only(right: 12, top: 2),
+          child: message.isError
+              ? const Icon(Icons.error_outline_rounded, size: 20, color: AppTheme.ink2)
+              : const SparkleIcon(size: 20),
         ),
         Expanded(
           child: GestureDetector(
@@ -133,26 +138,35 @@ class _MessageBubbleState extends State<MessageBubble>
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                if (message.toolName != null)
+                if (message.toolsUsed.isNotEmpty)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 8),
-                    child: _toolPill(message.toolName!),
+                    child: Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      children: [for (final t in message.toolsUsed.toSet()) _toolPill(t)],
+                    ),
                   ),
                 MarkdownBody(
                   data: message.text,
                   selectable: true,
+                  onTapLink: (_, href, __) {
+                    final uri = href == null ? null : Uri.tryParse(href);
+                    if (uri != null && (uri.scheme == 'https' || uri.scheme == 'http')) {
+                      launchUrl(uri, mode: LaunchMode.externalApplication);
+                    }
+                  },
                   styleSheet: MarkdownStyleSheet(
                     p: GoogleFonts.interTight(
                       fontSize: 15,
-                      color: AppTheme.ink,
+                      color: message.isError ? AppTheme.ink2 : AppTheme.ink,
                       height: 1.55,
                     ),
                     strong: GoogleFonts.interTight(
-                      fontSize: 15,
-                      color: AppTheme.ink,
-                      fontWeight: FontWeight.w600,
-                      height: 1.55,
-                    ),
+                        fontSize: 15, color: AppTheme.ink, fontWeight: FontWeight.w600, height: 1.55),
+                    listBullet: GoogleFonts.interTight(fontSize: 15, color: AppTheme.ink2),
+                    a: GoogleFonts.interTight(
+                        fontSize: 15, color: AppTheme.ink, decoration: TextDecoration.underline),
                     code: GoogleFonts.jetBrainsMono(
                       backgroundColor: Colors.white.withValues(alpha: 0.08),
                       fontSize: 13,
@@ -165,7 +179,12 @@ class _MessageBubbleState extends State<MessageBubble>
                     ),
                   ),
                 ),
-                if (message.tps != null || message.toolName != null)
+                if (message.imagePath != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 10),
+                    child: _image(message.imagePath!, width: 240),
+                  ),
+                if (_meta().isNotEmpty)
                   Padding(
                     padding: const EdgeInsets.only(top: 10),
                     child: Text(
@@ -187,22 +206,23 @@ class _MessageBubbleState extends State<MessageBubble>
 
   String _meta() {
     final parts = <String>[];
-    if (message.toolName != null) {
-      parts.add('TOOL: ${message.toolName!.toUpperCase()}');
+    if (message.instant) {
+      parts.add('INSTANT');
+    } else if (message.modelLabel != null && message.modelLabel!.isNotEmpty) {
+      parts.add(message.modelLabel!.toUpperCase());
     }
-    if (message.tps != null) {
-      parts.add('${message.tps!.toStringAsFixed(1)} TPS');
+    if (message.tokensPerSecond != null && message.tokensPerSecond! > 0) {
+      parts.add('${message.tokensPerSecond!.toStringAsFixed(1)} TOK/S');
     }
-    if (message.evalTime != null) {
-      parts.add('${message.evalTime!.toStringAsFixed(1)}S');
+    if (message.seconds != null && message.seconds! >= 0.05) {
+      parts.add('${message.seconds!.toStringAsFixed(1)}S');
     }
-    parts.add('LOCAL · ON-DEVICE');
     return parts.join('  ·  ');
   }
 
   Widget _toolPill(String name) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
         color: AppTheme.surface,
         borderRadius: BorderRadius.circular(10),
@@ -216,24 +236,11 @@ class _MessageBubbleState extends State<MessageBubble>
             height: 6,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              color: AppTheme.success,
-              boxShadow: [
-                BoxShadow(
-                  color: AppTheme.success.withValues(alpha: 0.16),
-                  blurRadius: 0,
-                  spreadRadius: 3,
-                ),
-              ],
+              color: message.isError ? AppTheme.muted : AppTheme.success,
             ),
           ),
           const SizedBox(width: 8),
-          Text(
-            name,
-            style: GoogleFonts.jetBrainsMono(
-              fontSize: 11,
-              color: AppTheme.ink2,
-            ),
-          ),
+          Text(name, style: GoogleFonts.jetBrainsMono(fontSize: 11, color: AppTheme.ink2)),
         ],
       ),
     );

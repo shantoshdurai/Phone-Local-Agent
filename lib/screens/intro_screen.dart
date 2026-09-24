@@ -1,23 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+
+import '../app/launch.dart';
 import '../theme/app_theme.dart';
 import '../widgets/design_components.dart';
 import 'permissions_screen.dart';
 
-/// 01 · Intro — first run welcome.
+/// 01 · Intro — first-run welcome.
 class IntroScreen extends StatelessWidget {
   const IntroScreen({super.key});
-
-  void _start(BuildContext context) {
-    Navigator.of(context).pushReplacement(
-      PageRouteBuilder(
-        pageBuilder: (_, __, ___) => const PermissionsScreen(),
-        transitionsBuilder: (_, anim, __, child) =>
-            FadeTransition(opacity: anim, child: child),
-        transitionDuration: const Duration(milliseconds: 500),
-      ),
-    );
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -32,10 +23,10 @@ class IntroScreen extends StatelessWidget {
               const SizedBox(height: 32),
               const BrandMark.large(),
               const SizedBox(height: 28),
-              const Eyebrow('LOCAL AGENT · v0.4'),
+              const Eyebrow('LOCAL AGENT'),
               const SizedBox(height: 18),
               Text(
-                "Hello.\nI'm your\nlocal AI agent.",
+                "Hello.\nI'm your\nphone's AI agent.",
                 style: GoogleFonts.interTight(
                   fontSize: 42,
                   fontWeight: FontWeight.w600,
@@ -46,21 +37,18 @@ class IntroScreen extends StatelessWidget {
               ),
               const SizedBox(height: 18),
               SizedBox(
-                width: 320,
+                width: 330,
                 child: Text(
-                  'A private intelligence that lives entirely on your device. '
-                  'No cloud processing. No telemetry.',
-                  style: GoogleFonts.interTight(
-                    fontSize: 14,
-                    height: 1.55,
-                    color: AppTheme.ink2,
-                  ),
+                  'Ask questions and get things done on your phone — flashlight, timers, '
+                  'calls, weather, search and more. Run the AI privately on this device, '
+                  'or with your own API key. No account, no tracking.',
+                  style: GoogleFonts.interTight(fontSize: 14, height: 1.55, color: AppTheme.ink2),
                 ),
               ),
               const Spacer(),
               PrimaryButton(
-                onPressed: () => _start(context),
-                label: 'Continue',
+                onPressed: () => Navigator.of(context).pushReplacement(fadeRoute(const PermissionsScreen())),
+                label: 'Get started',
               ),
               const SizedBox(height: 22),
               Row(
@@ -72,22 +60,14 @@ class IntroScreen extends StatelessWidget {
                       shape: BoxShape.circle,
                       color: AppTheme.success,
                       boxShadow: [
-                        BoxShadow(
-                          color: AppTheme.success.withValues(alpha: 0.12),
-                          blurRadius: 0,
-                          spreadRadius: 4,
-                        ),
+                        BoxShadow(color: AppTheme.success.withValues(alpha: 0.12), spreadRadius: 4),
                       ],
                     ),
                   ),
                   const SizedBox(width: 8),
                   Text(
-                    'RUNS 100% OFFLINE ON THIS DEVICE',
-                    style: GoogleFonts.jetBrainsMono(
-                      fontSize: 10,
-                      letterSpacing: 1.4,
-                      color: AppTheme.muted,
-                    ),
+                    'ON-DEVICE OR BRING YOUR OWN KEY',
+                    style: GoogleFonts.jetBrainsMono(fontSize: 10, letterSpacing: 1.4, color: AppTheme.muted),
                   ),
                 ],
               ),
