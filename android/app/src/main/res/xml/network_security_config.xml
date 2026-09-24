@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Built-in providers are all HTTPS. Plain HTTP is allowed only so people can point
+     the "Custom (OpenAI-compatible)" provider at a server on their own network,
+     such as Ollama or LM Studio on http://192.168.x.x. User-installed CAs are not trusted. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
