@@ -27,6 +27,12 @@ class ModelSpec {
   final int topK;
   final double topP;
 
+  /// Decode speed measured on an 8-core reference phone, in tokens/second.
+  /// DeviceCapability scales this by core count and RAM headroom to predict
+  /// what the user will actually see. Keep it conservative: over-promising
+  /// tok/s is worse than the user being pleasantly surprised.
+  final double baselineTps;
+
   /// Lowest device RAM (GB) at which this model is comfortable. The home
   /// screen picks the heaviest spec the device clears as the default.
   final int minRamGB;
@@ -62,6 +68,7 @@ class ModelSpec {
     required this.topK,
     required this.topP,
     required this.minRamGB,
+    this.baselineTps = 8.0,
     this.toolBudget = 26,
   });
 
@@ -114,6 +121,9 @@ class ModelRegistry {
     topK: 40,
     topP: 0.95,
     minRamGB: 4,
+    // Measured on an 8-core reference device with the CPU backend. Small
+    // models decode near memory-bandwidth limits, so this is stable.
+    baselineTps: 12.0,
     // Qwen 2.5 1.5B drowns in the full 26-tool catalog: prefill blew
     // past 100s on Waydroid and the model degenerated into reciting
     // tool descriptions ("This tool lets you choose a course or a
@@ -150,7 +160,7 @@ class ModelRegistry {
   // makes Phi-4 q8 degenerate — short prompts emit EOS instantly and longer
   // ones latch onto a single CJK-region token and repeat it for the rest of
   // the budget ("编编编 / 度度度 / 名名名").
-  static const ModelSpec phi4_mini = ModelSpec(
+  static const ModelSpec phi4Mini = ModelSpec(
     id: 'phi-4-mini-instruct',
     displayName: 'Phi-4 mini Instruct',
     fileName: 'Phi-4-mini-instruct_q8.task',
@@ -174,22 +184,19 @@ class ModelRegistry {
     topK: 40,
     topP: 0.95,
     minRamGB: 6,
+    baselineTps: 5.0,
     // Phi-4 mini (3.8B) handles a broader catalog than Qwen 1.5B but
     // still benefits from focused selection on a 1280 KV cap. 14 = all
     // core + most common, no niche.
     toolBudget: 14,
   );
 
-  static const List<ModelSpec> all = [phi4_mini, qwen2_5_1_5b];
+  static const List<ModelSpec> all = [phi4Mini, qwen2_5_1_5b];
 
   static ModelSpec byFileName(String fileName) {
     return all.firstWhere(
       (m) => m.fileName == fileName,
-      orElse: () => phi4_mini,
+      orElse: () => phi4Mini,
     );
-  }
-
-  static ModelSpec defaultForDevice(int? ramGB) {
-    return qwen2_5_1_5b;
   }
 }

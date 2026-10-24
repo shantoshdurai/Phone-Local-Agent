@@ -4,6 +4,12 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// Stored in SharedPreferences so the choice survives restarts.
 enum AgentMode { local, cloud }
 
+/// Shared preference keys. Previously duplicated as private constants in
+/// `main.dart` and the onboarding screens, which is exactly how the
+/// "onboarding revisited on every update" class of bug happens.
+const String kOnboardingSeenPref = 'onboarding_seen_v1';
+const String kLastModelPref = 'last_used_model_file';
+
 class AgentModeStore {
   AgentModeStore._();
 

@@ -7,12 +7,14 @@ import 'package:google_generative_ai/google_generative_ai.dart';
 import 'agent_response.dart';
 import 'agent_mode.dart';
 import 'database_service.dart';
+import 'llm/remote_agent.dart';
+import 'memory_service.dart';
 import 'tool_runtime.dart';
 
 /// Cloud-mode agent. Mirrors the surface of [AgentService] (initialize,
 /// loadSession, sendMessage, stopGeneration, statusStream, tokenStream) so
 /// the chat UI can swap between the two without caring which backend is live.
-class GeminiService {
+class GeminiService implements RemoteAgent {
   static final GeminiService _instance = GeminiService._internal();
   factory GeminiService() => _instance;
   GeminiService._internal();
@@ -20,13 +22,21 @@ class GeminiService {
   static const String modelName = 'Gemini 2.5 Flash';
   static const String _modelId = 'gemini-2.5-flash';
 
+  @override
+  String get activeModelLabel => modelName;
+
+  @override
+  bool get supportsVision => true;
+
   final DatabaseService _dbService = DatabaseService();
   final ToolRuntime _tools = ToolRuntime.instance;
 
   final _statusController = StreamController<String>.broadcast();
+  @override
   Stream<String> get statusStream => _statusController.stream;
 
   final _tokenStreamController = StreamController<String>.broadcast();
+  @override
   Stream<String> get tokenStream => _tokenStreamController.stream;
 
   GenerativeModel? _model;
@@ -34,8 +44,10 @@ class GeminiService {
   String? _apiKey;
   bool _stopRequested = false;
 
+  @override
   bool get isReady => _model != null && _chat != null;
 
+  @override
   Future<void> initialize() async {
     final key = await AgentModeStore.readApiKey();
     if (key == null) {
@@ -47,10 +59,13 @@ class GeminiService {
       return;
     }
     _apiKey = key;
+    final memory = await MemoryService.instance.promptBlock();
     _model = GenerativeModel(
       model: _modelId,
       apiKey: key,
-      systemInstruction: Content.system(_systemPrompt),
+      systemInstruction: Content.system(
+        memory.isEmpty ? _systemPrompt : '$_systemPrompt\n\n$memory',
+      ),
       tools: [Tool(functionDeclarations: _functionDeclarations())],
       generationConfig: GenerationConfig(
         temperature: 0.7,
@@ -61,6 +76,7 @@ class GeminiService {
     _statusController.add('');
   }
 
+  @override
   Future<void> loadSession(int sessionId) async {
     if (_model == null) return;
     final history = await _dbService.getChatHistory(sessionId);
@@ -78,11 +94,13 @@ class GeminiService {
     _chat = _model!.startChat(history: replay);
   }
 
+  @override
   Future<void> stopGeneration() async {
     _stopRequested = true;
     _statusController.add('');
   }
 
+  @override
   Future<AgentResponse> sendMessage(
     String text,
     int sessionId, {
@@ -91,6 +109,16 @@ class GeminiService {
     if (_chat == null) throw Exception('Gemini not initialized');
     _statusController.add('Thinking...');
     _stopRequested = false;
+
+    // Same durable-fact capture as the local path. The fact is prepended so it
+    // is usable in this turn rather than only after the next re-init.
+    String factPrefix = '';
+    try {
+      final fact = await MemoryService.instance.captureFromUserText(text);
+      if (fact != null) {
+        factPrefix = '[New fact about the user, learned just now: ${fact.text}]\n\n';
+      }
+    } catch (_) {}
 
     final parts = <Part>[];
     if (imagePath != null && imagePath.isNotEmpty) {
@@ -101,7 +129,7 @@ class GeminiService {
         // fall through to text-only
       }
     }
-    parts.add(TextPart(text));
+    parts.add(TextPart('$factPrefix$text'));
 
     final userMessage = Content('user', parts);
     final result = await _runWithTools(userMessage, sessionId);
@@ -311,7 +339,11 @@ String _mimeFromPath(String path) {
   }
 
   static const String _systemPrompt = '''
-You are Local Agent — an on-device-style AI assistant running through the Gemini API for the user's Android phone. You have function tools for device control, app launching, files, contacts, calendar, web search, and clipboard.
+You are Agent — a fast assistant on the user's Android phone. You have function tools for device control, app launching, files, contacts, calendar, web search, and clipboard.
+
+IDENTITY:
+- You are "Agent". Never mention Gemini, Google, the model name, or any vendor.
+- If asked what you are, say you are Agent, their phone assistant.
 
 Behavior:
 - For any actionable request (turn flashlight on, open an app, vibrate, set volume, list files, search the web, look up a contact, schedule something), CALL THE MATCHING TOOL. Do not say "I'll do that" — emit the call.

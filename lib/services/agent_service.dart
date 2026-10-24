@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:async';
 import 'dart:typed_data';
+import 'package:flutter/foundation.dart' show ValueNotifier, debugPrint;
 // flutter_gemma exports a `ModelSpec` that collides with ours. We never need
 // the SDK's variant in this file, so hide it.
 import 'package:flutter_gemma/flutter_gemma.dart' hide ModelSpec;
@@ -10,6 +11,12 @@ import 'model_registry.dart';
 import 'database_service.dart';
 import 'agent_response.dart';
 import 'gemini_service.dart';
+import 'llm/openai_compatible_service.dart';
+import 'llm/provider_config.dart';
+import 'llm/remote_agent.dart';
+import 'memory_service.dart';
+import 'model_benchmarks.dart';
+import 'startup_trace.dart';
 import 'tool_runtime.dart';
 import 'embedding/chat_memory.dart';
 import 'embedding/tool_index.dart';
@@ -30,18 +37,38 @@ class AgentService {
   ModelSpec _activeSpec = ModelRegistry.qwen2_5_1_5b;
   ModelSpec get activeSpec => _activeSpec;
   String get _modelName =>
-      _cloudActive ? GeminiService.modelName : _activeSpec.displayName;
+      _remote?.activeModelLabel ?? _activeSpec.displayName;
 
   /// Display label for the active backend. Used by the chat header.
   String get activeModelName => _modelName;
 
-  /// True when this turn (and following turns) will go through the cloud
-  /// Gemini path. Read by ChatScreen to hide the local model picker.
-  bool get isCloudMode => _cloudActive;
+  /// True when this turn (and following turns) will go through a remote API.
+  /// Read by ChatScreen to hide the local model picker.
+  bool get isCloudMode => _remote != null;
+
+  /// True when the active remote backend is running on the shared demo key.
+  /// Drives the "N messages left today" banner.
+  bool get isDemoMode {
+    final remote = _remote;
+    return remote is OpenAiCompatibleService && remote.isDemo;
+  }
+
+  /// True when the active remote backend can read images. OpenRouter routes to
+  /// DeepSeek's vision model; Gemini accepts images; the rest are text-only.
+  bool get remoteSupportsVision => _remote?.supportsVision ?? false;
+
+  /// Result of the silent tool-calling probe: null = not run yet, true = the
+  /// backend emitted a native tool call, false = tool calling is broken on this
+  /// setup. The chat shows a small warning only in the false case.
+  final ValueNotifier<bool?> toolsVerified = ValueNotifier<bool?>(null);
+  bool _probeInFlight = false;
 
   final DatabaseService _dbService = DatabaseService();
   final ToolRuntime _toolRuntime = ToolRuntime.instance;
-  final GeminiService _gemini = GeminiService();
+
+  /// The active remote backend (Groq / DeepSeek / custom / Gemini). Null when
+  /// running on-device.
+  RemoteAgent? _remote;
 
   final _statusController = StreamController<String>.broadcast();
   Stream<String> get statusStream => _statusController.stream;
@@ -56,15 +83,16 @@ class AgentService {
   // this so we don't recurse into a follow-up tool/summary turn after a stop.
   bool _stopRequested = false;
 
-  // True when the active backend is GeminiService (cloud). Set during
-  // [initialize]; consulted by every public entry point so the cloud path
-  // is taken regardless of which screen calls us.
-  bool _cloudActive = false;
+  // Number of tool hops executed in the current user turn. Small models can
+  // emit tool → summary → same tool forever; each hop is a full prefill, so
+  // an unguarded loop pins the CPU and drains the battery. Reset per turn.
+  int _toolDepth = 0;
+  static const int _maxToolDepth = 3;
 
-  // Forwarders that pipe GeminiService's streams into our own controllers
+  // Forwarders that pipe the remote backend's streams into our own controllers
   // so ChatScreen only ever subscribes to AgentService.
-  StreamSubscription<String>? _geminiStatusSub;
-  StreamSubscription<String>? _geminiTokenSub;
+  StreamSubscription<String>? _remoteStatusSub;
+  StreamSubscription<String>? _remoteTokenSub;
 
   static bool _gemmaReady = false;
   static bool _backgroundReady = false;
@@ -90,22 +118,19 @@ class AgentService {
   }
 
   Future<void> initialize(String modelFileName) async {
-    // Cloud path — same entrypoint so SplashScreen + ChatScreen don't need
-    // to know which backend they're booting. The sentinel routes us to
-    // GeminiService and we leave the local model fields untouched.
+    StartupTrace.mark('initialize_start');
+    // Remote path — same entrypoint so screens don't need to know which
+    // backend they're booting. The sentinel resolves the configured provider
+    // (Groq / DeepSeek / custom / Gemini) and leaves local fields untouched.
     if (modelFileName == kCloudModelSentinel) {
-      _cloudActive = true;
-      _wireGeminiStreams();
-      _statusController.add('Connecting to Gemini...');
-      await _gemini.initialize();
-      _statusController.add('');
+      await _initRemote();
       return;
     }
 
-    // Switching back from cloud → local: tear down the forwarders.
-    if (_cloudActive) {
-      _unwireGeminiStreams();
-      _cloudActive = false;
+    // Switching back from remote → local: tear down the forwarders.
+    if (_remote != null) {
+      _unwireRemoteStreams();
+      _remote = null;
     }
 
     // Idempotent — splash + chat both end up calling this on the same model;
@@ -147,13 +172,12 @@ class AgentService {
     // instead of stalling for half a minute on cold start.
     _statusController.add('Warming up...');
 
-    // Kick off the RAG tool index build in parallel — it downloads the
-    // MiniLM ONNX model + vocab on first run (~22MB) and embeds the tool
-    // catalog. We don't await it: if it's slow or fails, the agent just
-    // works without retrieval hints (ToolIndex returns []). The first
-    // turn might land before the index is ready; subsequent turns benefit.
-    // ignore: discarded_futures
-    ToolIndex.instance.build();
+    // The RAG tool-index build (ONNX session + 26 doc embeddings, plus a
+    // one-time 22 MB asset extraction) used to be kicked off right here, in
+    // parallel with model warmup. It is CPU work on the same critical path as
+    // the first token, so it made cold start measurably worse and the first
+    // turn slower. It is now triggered after the first completed turn — see
+    // [_rebuildRetrievalIndexLater] — where it costs nothing user-visible.
 
     await _warmupModel();
 
@@ -166,6 +190,7 @@ class AgentService {
     _chatIsPristine = true;
 
     _statusController.add('');
+    StartupTrace.mark('model_ready');
   }
 
   /// True when `_chat` was just created by `initialize` and hasn't received
@@ -215,21 +240,88 @@ class AgentService {
     }
   }
 
-  void _wireGeminiStreams() {
-    _geminiStatusSub ??= _gemini.statusStream.listen(_statusController.add);
-    _geminiTokenSub ??= _gemini.tokenStream.listen(_tokenStreamController.add);
+  /// Resolve the configured provider and bring it online.
+  ///
+  /// [providerOverride] powers a session-only fallback: the user's saved
+  /// choice is left alone, but this process keeps answering through the
+  /// provider that actually works.
+  Future<void> _initRemote({LlmProvider? providerOverride}) async {
+    final provider = providerOverride ?? await ProviderStore.readProvider();
+    if (provider == LlmProvider.local) {
+      throw StateError('Remote mode selected but no provider is configured.');
+    }
+    final config = await ProviderStore.resolve(provider);
+    final RemoteAgent remote = provider == LlmProvider.gemini
+        ? GeminiService()
+        : OpenAiCompatibleService(config);
+
+    _unwireRemoteStreams();
+    _remote = remote;
+    _remoteStatusSub = remote.statusStream.listen(_statusController.add);
+    _remoteTokenSub = remote.tokenStream.listen(_tokenStreamController.add);
+
+    _statusController.add('Connecting to ${config.label}...');
+    await remote.initialize();
+    _statusController.add('');
+
+    // Silent first-response capability check. We ask the model to call a
+    // zero-argument tool and verify it actually emits a tool call, so a broken
+    // provider is discovered before the user's first real request.
+    if (remote is OpenAiCompatibleService && !_probeInFlight) {
+      _probeInFlight = true;
+      toolsVerified.value = null;
+      // ignore: discarded_futures
+      remote.probeToolCalling().then((ok) {
+        toolsVerified.value = ok;
+        _probeInFlight = false;
+        debugPrint('[AgentService] tool probe: ${ok ? 'ok' : 'FAILED'}');
+      });
+    }
   }
 
-  void _unwireGeminiStreams() {
-    _geminiStatusSub?.cancel();
-    _geminiTokenSub?.cancel();
-    _geminiStatusSub = null;
-    _geminiTokenSub = null;
+  void _unwireRemoteStreams() {
+    _remoteStatusSub?.cancel();
+    _remoteTokenSub?.cancel();
+    _remoteStatusSub = null;
+    _remoteTokenSub = null;
+  }
+
+  /// Last-resort provider fallback.
+  ///
+  /// Only providers the user has already configured with a key are candidates,
+  /// and the switch is session-only — the saved choice is untouched. Returns
+  /// null when every candidate also failed.
+  Future<AgentResponse?> _tryFallbackProvider(
+    String text,
+    int sessionId, {
+    String? imagePath,
+  }) async {
+    final current = await ProviderStore.readProvider();
+    final candidates = await ProviderStore.otherConfiguredProviders(current);
+    for (final provider in candidates) {
+      final label = kProviderSpecs[provider]?.label ?? provider.name;
+      try {
+        _statusController.add('Switching to $label…');
+        await _initRemote(providerOverride: provider);
+        final result = await _remote!.sendMessage(
+          text,
+          sessionId,
+          imagePath: imagePath,
+        );
+        _statusController.add('');
+        return result;
+      } catch (e) {
+        debugPrint('[AgentService] fallback to $label failed: $e');
+        continue;
+      }
+    }
+    return null;
   }
 
   Future<void> loadSession(int sessionId) async {
-    if (_cloudActive) {
-      await _gemini.loadSession(sessionId);
+    final remote = _remote;
+    if (remote != null) {
+      await remote.loadSession(sessionId);
       return;
     }
     final history = await _dbService.getChatHistory(sessionId);
@@ -275,6 +367,14 @@ class AgentService {
   Future<void> _rebuildChat(List<Message> replay) async {
     if (_model == null) return;
 
+    // Persistent memory is injected into the system prompt (not the user turn)
+    // so it survives context-refocus rebuilds and never looks like something
+    // the user just said.
+    final memoryBlock = await MemoryService.instance.promptBlock();
+    final systemInstruction = memoryBlock.isEmpty
+        ? _getSystemPrompt()
+        : '${_getSystemPrompt()}\n\n$memoryBlock';
+
     // Pick the tool subset for this model via the tier system. Filling
     // budget core → common → niche keeps essentials (device_info,
     // search_web, …) available even on the smallest models; tail tools
@@ -311,7 +411,7 @@ class AgentService {
       // system message at conversation creation, so the prompt has to land
       // here — passing it via a follow-up addQuery would skip the tools
       // block.
-      systemInstruction: _getSystemPrompt(),
+      systemInstruction: systemInstruction,
       isThinking: _activeSpec.isThinking,
     );
 
@@ -326,7 +426,9 @@ class AgentService {
     // (duplication confuses small models and burns KV budget). The Phi path
     // has tools disabled at the spec level today, but we keep one prompt
     // shape so behavior stays consistent if that changes.
-    return 'You are Local Agent, an on-device AI assistant on the user\'s Android phone. '
+    return 'You are Agent, a fast assistant on the user\'s Android phone. '
+        'Never mention the model name, parameter count, vendor, or whether you '
+        'are cloud or on-device — you are simply "Agent".\n'
         'You have native function tools for device info, battery, storage, RAM, connectivity, '
         'apps, files, clipboard, contacts, calendar, web search, and device control '
         '(flashlight, volume, vibrate, alarms, timers, calls).\n'
@@ -350,8 +452,9 @@ class AgentService {
   /// call exits naturally with whatever text was generated so far — that
   /// partial reply gets saved as the assistant's message like any other turn.
   Future<void> stopGeneration() async {
-    if (_cloudActive) {
-      await _gemini.stopGeneration();
+    final remote = _remote;
+    if (remote != null) {
+      await remote.stopGeneration();
       _statusController.add('');
       return;
     }
@@ -374,17 +477,52 @@ class AgentService {
     int sessionId, {
     String? imagePath,
   }) async {
+    // Remote turns must never fall into the local recovery path below: it
+    // would call initialize() with a .task filename and silently switch the
+    // app off the remote backend mid-conversation.
+    final remote = _remote;
+    if (remote != null) {
+      try {
+        return await remote.sendMessage(text, sessionId, imagePath: imagePath);
+      } on RemoteUnavailable catch (e) {
+        // The selected provider cannot serve us at all (dead key, no usable
+        // model). Try any other provider the user has already configured, for
+        // this session only; otherwise show the reason as a normal message.
+        final fallback = await _tryFallbackProvider(
+          text,
+          sessionId,
+          imagePath: imagePath,
+        );
+        if (fallback != null) return fallback;
+        _statusController.add('');
+        return AgentResponse(e.message, _modelName, 0);
+      }
+    }
     try {
       return await _sendMessageInternal(text, sessionId, imagePath: imagePath);
     } catch (e) {
-      print('sendMessage failed natively. Attempting full model re-initialization: $e');
-      // Model might have been corrupted by OS backgrounding. Re-initialize from disk!
-      if (_activeSpec != null) {
-        await initialize(_activeSpec!.fileName);
-        await loadSession(sessionId);
-        return await _sendMessageInternal(text, sessionId, imagePath: imagePath);
+      final s = e.toString();
+      final recoverable = s.contains('Previous invocation') ||
+          s.contains('IllegalStateException') ||
+          s.contains('OUT_OF_RANGE') ||
+          s.toLowerCase().contains('session');
+      if (!recoverable || _chat == null) rethrow;
+
+      // A stale native session is the common cause (the engine was killed
+      // while the app was backgrounded). Rebuilding the chat session is
+      // cheap; re-initializing the whole model costs 10–30 s and was what
+      // this path used to do, which made a transient failure feel like a
+      // freeze.
+      debugPrint('[AgentService] recoverable turn failure, rebuilding session: $s');
+      try {
+        await _rebuildChat(const []);
+        _chatIsPristine = false;
+        return await _sendMessageInternal(text, sessionId,
+            imagePath: imagePath);
+      } catch (e2) {
+        debugPrint('[AgentService] retry after rebuild failed: $e2');
+        rethrow;
       }
-      rethrow;
     }
   }
 
@@ -393,13 +531,29 @@ class AgentService {
     int sessionId, {
     String? imagePath,
   }) async {
-    if (_cloudActive) {
-      return _gemini.sendMessage(text, sessionId, imagePath: imagePath);
+    final remote = _remote;
+    if (remote != null) {
+      return remote.sendMessage(text, sessionId, imagePath: imagePath);
     }
 
     if (_chat == null) throw Exception('Model not initialized');
 
     _chatIsPristine = false;
+
+    // Capture durable facts ("my name is…", "remember that…") and hand the new
+    // one to *this* turn. The system prompt only refreshes when the chat
+    // session is rebuilt, so without this a fact learned mid-conversation
+    // would not be usable until the next new chat.
+    String freshFactLine = '';
+    try {
+      final fact = await MemoryService.instance.captureFromUserText(text);
+      if (fact != null) {
+        freshFactLine =
+            '[New fact about the user, learned just now: ${fact.text}]\n\n';
+      }
+    } catch (_) {
+      // Memory is best-effort and must never break a turn.
+    }
 
     try {
       await FlutterBackground.enableBackgroundExecution();
@@ -485,10 +639,10 @@ class AgentService {
         }
       } catch (e) {
         // RAG retrieval should never block a chat turn. Swallow and move on.
-        print('ToolIndex retrieval skipped: $e');
+        debugPrint('ToolIndex retrieval skipped: $e');
       }
     }
-    final String promptText = '$hintLine$text';
+    final String promptText = '$freshFactLine$hintLine$text';
 
     Message userMessage;
     if (imagePath != null && imagePath.isNotEmpty) {
@@ -531,6 +685,7 @@ class AgentService {
     }
 
     _stopRequested = false;
+    _toolDepth = 0;
     AgentResponse result;
     retryCount = 0;
     while (true) {
@@ -568,8 +723,31 @@ class AgentService {
     } catch (_) {}
     _statusController.add('');
 
+    // Persist the real decode speed so the model store can replace its
+    // estimate with a measured number, and warm the retrieval index now that
+    // the latency-critical part of the turn is over.
+    if (result.tps != null && result.tps! > 0) {
+      // ignore: discarded_futures
+      ModelBenchmarks.record(_activeSpec.fileName, result.tps!);
+    }
+    _rebuildRetrievalIndexLater();
+
     return result;
   }
+
+  /// Build the tool-retrieval index once, off the user-visible path.
+  ///
+  /// First call happens after the first turn completes; the ONNX session load
+  /// and 26 embeddings then run while the user is reading the reply rather
+  /// than while they are waiting for the first token.
+  void _rebuildRetrievalIndexLater() {
+    if (ToolIndex.instance.isReady || _retrievalBuildStarted) return;
+    _retrievalBuildStarted = true;
+    // ignore: discarded_futures
+    ToolIndex.instance.build();
+  }
+
+  bool _retrievalBuildStarted = false;
 
   // Stream the model's response. If it emits a function call, execute the
   // tool and either short-circuit with a templated reply (simple commands)
@@ -807,6 +985,16 @@ class AgentService {
     double priorTps,
     double priorEvalTime,
   ) async {
+    if (_toolDepth >= _maxToolDepth) {
+      const guard = 'I stopped after a few tool steps so I don\'t loop. '
+          'Try asking in a more specific way.';
+      _statusController.add('');
+      await _dbService.saveMessage('assistant', guard, sessionId);
+      return AgentResponse(guard, _modelName, 0,
+          tps: priorTps, evalTime: priorEvalTime, toolName: toolName);
+    }
+    _toolDepth++;
+
     _statusController.add('Running $toolName...');
     final toolResult = await _toolRuntime.execute(toolName, args);
 
@@ -860,253 +1048,20 @@ class AgentService {
 
   // ─── Tool declarations ───
   // The model sees these as native function declarations via the LiteRT-LM
-  // chat template. Keep descriptions concrete and parameters strict.
-  static final List<Tool> _tools = const [
-    Tool(
-      name: 'get_date_time',
-      description: 'Get local date, time, and timezone.',
-      parameters: {'type': 'object', 'properties': {}},
-    ),
-    Tool(
-      name: 'get_device_info',
-      description: 'Get device manufacturer, OS, battery, storage, and RAM.',
-      parameters: {'type': 'object', 'properties': {}},
-    ),
-    Tool(
-      name: 'check_connectivity',
-      description: 'Check if device is online, WiFi/Cellular, SSID, and IP.',
-      parameters: {'type': 'object', 'properties': {}},
-    ),
-    Tool(
-      name: 'get_public_ip',
-      description: 'Get public IP address.',
-      parameters: {'type': 'object', 'properties': {}},
-    ),
-    Tool(
-      name: 'search_web',
-      description: 'Search the web for up-to-date facts and news.',
-      parameters: {
-        'type': 'object',
-        'properties': {
-          'query': {'type': 'string'},
-        },
-        'required': ['query'],
-      },
-    ),
-    Tool(
-      name: 'open_url',
-      description: 'Open URL in browser.',
-      parameters: {
-        'type': 'object',
-        'properties': {
-          'url': {'type': 'string'},
-        },
-        'required': ['url'],
-      },
-    ),
-    Tool(
-      name: 'list_files',
-      description: 'List user files. Filters: extension, sortBy (modified/name/size).',
-      parameters: {
-        'type': 'object',
-        'properties': {
-          'extension': {'type': 'string'},
-          'sortBy': {'type': 'string'},
-        },
-      },
-    ),
-    Tool(
-      name: 'list_apps',
-      description: 'List installed apps and sizes.',
-      parameters: {'type': 'object', 'properties': {}},
-    ),
-    Tool(
-      name: 'launch_app_by_name',
-      description: 'Launch app by display name.',
-      parameters: {
-        'type': 'object',
-        'properties': {
-          'appName': {'type': 'string'},
-        },
-        'required': ['appName'],
-      },
-    ),
-    Tool(
-      name: 'launch_app',
-      description: 'Launch app by package name.',
-      parameters: {
-        'type': 'object',
-        'properties': {
-          'packageName': {'type': 'string'},
-        },
-        'required': ['packageName'],
-      },
-    ),
-    Tool(
-      name: 'uninstall_app',
-      description: 'Uninstall app by package name.',
-      parameters: {
-        'type': 'object',
-        'properties': {
-          'packageName': {'type': 'string'},
-        },
-        'required': ['packageName'],
-      },
-    ),
-    Tool(
-      name: 'search_play_store',
-      description: 'Search Play Store.',
-      parameters: {
-        'type': 'object',
-        'properties': {
-          'query': {'type': 'string'},
-        },
-        'required': ['query'],
-      },
-    ),
-    Tool(
-      name: 'open_play_store',
-      description: 'Open Play Store page.',
-      parameters: {
-        'type': 'object',
-        'properties': {
-          'packageName': {'type': 'string'},
-        },
-        'required': ['packageName'],
-      },
-    ),
-    Tool(
-      name: 'toggle_flashlight',
-      description: 'Turn flashlight on/off.',
-      parameters: {
-        'type': 'object',
-        'properties': {
-          'on': {'type': 'boolean'},
-        },
-        'required': ['on'],
-      },
-    ),
-    Tool(
-      name: 'vibrate',
-      description: 'Vibrate device.',
-      parameters: {
-        'type': 'object',
-        'properties': {
-          'duration': {'type': 'integer'},
-        },
-      },
-    ),
-    Tool(
-      name: 'set_volume',
-      description: 'Set media volume (0.0 to 1.0).',
-      parameters: {
-        'type': 'object',
-        'properties': {
-          'level': {'type': 'number'},
-        },
-        'required': ['level'],
-      },
-    ),
-    Tool(
-      name: 'copy_to_clipboard',
-      description: 'Copy text to clipboard.',
-      parameters: {
-        'type': 'object',
-        'properties': {
-          'text': {'type': 'string'},
-        },
-        'required': ['text'],
-      },
-    ),
-    Tool(
-      name: 'read_clipboard',
-      description: 'Read clipboard text.',
-      parameters: {'type': 'object', 'properties': {}},
-    ),
-    Tool(
-      name: 'get_recent_screenshots',
-      description: 'Get recent screenshots.',
-      parameters: {'type': 'object', 'properties': {}},
-    ),
-    Tool(
-      name: 'search_contacts',
-      description: 'Search contacts by name to get phone number.',
-      parameters: {
-        'type': 'object',
-        'properties': {
-          'query': {'type': 'string'},
-        },
-        'required': ['query'],
-      },
-    ),
-    Tool(
-      name: 'schedule_event',
-      description: 'Create calendar event.',
-      parameters: {
-        'type': 'object',
-        'properties': {
-          'title': {'type': 'string'},
-          'start': {'type': 'string'},
-          'end': {'type': 'string'},
-          'description': {'type': 'string'},
-        },
-        'required': ['title', 'start', 'end'],
-      },
-    ),
-    Tool(
-      name: 'send_whatsapp',
-      description: 'Open WhatsApp to send message.',
-      parameters: {
-        'type': 'object',
-        'properties': {
-          'phone': {'type': 'string'},
-          'message': {'type': 'string'},
-        },
-        'required': ['phone', 'message'],
-      },
-    ),
-    Tool(
-      name: 'make_phone_call',
-      description: 'Make a phone call.',
-      parameters: {
-        'type': 'object',
-        'properties': {
-          'phone': {'type': 'string'},
-        },
-        'required': ['phone'],
-      },
-    ),
-    Tool(
-      name: 'set_alarm',
-      description: 'Set an alarm natively.',
-      parameters: {
-        'type': 'object',
-        'properties': {
-          'hour': {'type': 'integer'},
-          'minute': {'type': 'integer'},
-          'message': {'type': 'string'},
-        },
-        'required': ['hour', 'minute'],
-      },
-    ),
-    Tool(
-      name: 'set_timer',
-      description: 'Set a countdown timer natively.',
-      parameters: {
-        'type': 'object',
-        'properties': {
-          'seconds': {'type': 'integer'},
-          'message': {'type': 'string'},
-        },
-        'required': ['seconds'],
-      },
-    ),
-    Tool(
-      name: 'read_notifications',
-      description: 'Read the unread notifications from the device.',
-      parameters: {'type': 'object', 'properties': {}},
-    ),
-  ];
+  // chat template. Descriptions and parameter schemas live in `kToolCatalog`
+  // (tool_runtime.dart); the remote providers are generated from the same list.
+  /// Tool declarations for the on-device path, generated from [kToolCatalog]
+  /// so the local and remote paths share one source of truth. Adding a tool
+  /// is a single edit in `tool_runtime.dart`.
+  static final List<Tool> _tools = kToolCatalog
+      .map((entry) => Tool(
+            name: entry['name'] as String,
+            description: entry['description'] as String,
+            parameters: Map<String, dynamic>.from(
+              entry['parameters'] as Map<String, dynamic>,
+            ),
+          ))
+      .toList();
 
 
   // Retrying addQuery for tool responses. MediaPipe's session sometimes

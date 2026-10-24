@@ -58,6 +58,10 @@ const Map<String, ToolTier> kToolTiers = {
   'make_phone_call': ToolTier.common,
   'list_apps': ToolTier.common,
   'open_url': ToolTier.common,
+  'create_note': ToolTier.common,
+  'list_notes': ToolTier.common,
+  'get_weather': ToolTier.common,
+  'open_settings': ToolTier.common,
 
   // ─── niche (10) ────────────────────────────────────────────────────
   'send_whatsapp': ToolTier.niche,
@@ -73,6 +77,9 @@ const Map<String, ToolTier> kToolTiers = {
   'search_play_store': ToolTier.niche,
   'open_play_store': ToolTier.niche,
   'read_notifications': ToolTier.niche,
+  'delete_note': ToolTier.niche,
+  'send_sms': ToolTier.niche,
+  'compose_email': ToolTier.niche,
 };
 
 /// Tier order used by [selectForBudget]. Constant — exposed for tests

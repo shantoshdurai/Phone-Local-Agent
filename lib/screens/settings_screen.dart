@@ -1,13 +1,21 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../services/agent_mode.dart';
+import '../services/app_settings.dart';
+import '../services/assistant_service.dart';
+import '../services/device_capability.dart';
 import '../services/device_service.dart';
+import '../services/llm/provider_config.dart';
+import '../services/memory_service.dart';
 import '../services/model_downloader_service.dart';
 import '../services/model_registry.dart';
 import '../theme/app_theme.dart';
 import '../widgets/design_components.dart';
 import 'api_key_setup_screen.dart';
 import 'home_screen.dart';
+import 'memory_screen.dart';
+import 'provider_setup_screen.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 /// 09 · Settings — agent mode toggle, active model, behavior switches, about.
@@ -18,25 +26,50 @@ class SettingsScreen extends StatefulWidget {
   State<SettingsScreen> createState() => _SettingsScreenState();
 }
 
-class _SettingsScreenState extends State<SettingsScreen> {
+class _SettingsScreenState extends State<SettingsScreen>
+    with WidgetsBindingObserver {
   final DeviceService _deviceService = DeviceService();
   final ModelDownloaderService _downloader = ModelDownloaderService();
 
   Map<String, dynamic> _stats = {};
   final Map<String, bool> _modelReady = {};
   AgentMode _mode = AgentMode.local;
+  LlmProvider _provider = LlmProvider.local;
   String? _apiKeyMasked;
+  bool _isDefaultAssistant = false;
+  int _memoryCount = 0;
 
-  // Local toggles — persisted lightly through SharedPreferences in a real app;
-  // here they're memory-only and just drive the UI per the design.
-  bool _confirmActions = true;
-  bool _streamTokens = true;
-  bool _saveHistory = true;
+  // Persisted in SharedPreferences via AppSettings; the previous versions were
+  // State-only, so every visit reset them and "Confirm before actions" had no
+  // implementation behind it at all.
+  bool _confirmActions = AppSettings.confirmBeforeActions;
+  bool _streamTokens = AppSettings.streamTokens;
+  bool _saveHistory = AppSettings.saveHistory;
+  ModelSpec _activeSpec = ModelRegistry.qwen2_5_1_5b;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _loadData();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Coming back from the system "choose your assistant" dialog.
+    if (state == AppLifecycleState.resumed) _refreshAssistant();
+  }
+
+  Future<void> _refreshAssistant() async {
+    final isDefault = await AssistantService.instance.isDefaultAssistant();
+    if (!mounted) return;
+    setState(() => _isDefaultAssistant = isDefault);
   }
 
   Future<void> _loadData() async {
@@ -45,8 +78,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
     for (final spec in ModelRegistry.all) {
       ready[spec.fileName] = await _downloader.isModelDownloaded(spec.fileName);
     }
-    final mode = await AgentModeStore.read() ?? AgentMode.local;
-    final key = await AgentModeStore.readApiKey();
+    final provider = await ProviderStore.readProvider();
+    final mode =
+        provider == LlmProvider.local ? AgentMode.local : AgentMode.cloud;
+    final key = await ProviderStore.readKey(provider);
+    final isAssistant = await AssistantService.instance.isDefaultAssistant();
+    final memoryCount = await MemoryService.instance.count();
+    final prefs = await SharedPreferences.getInstance();
+    final lastModel = prefs.getString(kLastModelPref);
+    final profile = DeviceCapability.cached ?? await DeviceCapability.scan();
+    final active = (lastModel != null &&
+            ready[lastModel] == true &&
+            ModelRegistry.all.any((s) => s.fileName == lastModel))
+        ? ModelRegistry.byFileName(lastModel)
+        : DeviceCapability.recommendedSpec(profile) ??
+            ModelRegistry.qwen2_5_1_5b;
     if (!mounted) return;
     setState(() {
       _stats = stats;
@@ -54,6 +100,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ..clear()
         ..addAll(ready);
       _mode = mode;
+      _provider = provider;
+      _activeSpec = active;
+      _isDefaultAssistant = isAssistant;
+      _memoryCount = memoryCount;
+      _confirmActions = AppSettings.confirmBeforeActions;
+      _streamTokens = AppSettings.streamTokens;
+      _saveHistory = AppSettings.saveHistory;
       _apiKeyMasked = (key != null && key.length > 4)
           ? '••••${key.substring(key.length - 4)}'
           : null;
@@ -62,18 +115,47 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _switchMode(AgentMode next) async {
     if (next == _mode) return;
-    await AgentModeStore.write(next);
+    if (next == AgentMode.cloud) {
+      // "Cloud" now means "pick a provider"; a bare mode flag cannot express
+      // Groq vs DeepSeek vs Gemini.
+      final changed = await Navigator.of(context).push<bool>(
+        MaterialPageRoute(builder: (_) => const ProviderSetupScreen()),
+      );
+      if (changed == true) await _loadData();
+      return;
+    }
+    await ProviderStore.writeProvider(LlmProvider.local);
     if (!mounted) return;
     setState(() => _mode = next);
-    if (next == AgentMode.cloud && _apiKeyMasked == null) {
-      await Navigator.of(context).push(
-        MaterialPageRoute(builder: (_) => const ApiKeySetupScreen()),
-      );
-      _loadData();
-    }
   }
 
   int _readyCount() => _modelReady.values.where((v) => v).length;
+
+  Future<void> _requestAssistantRole() async {
+    if (_isDefaultAssistant) {
+      _snack('Already your default assistant. Change it in system settings.');
+      return;
+    }
+    final opened = await AssistantService.instance.requestDefaultAssistant();
+    if (!opened) {
+      _snack('The default-assistant role needs Android 10 or newer.');
+      return;
+    }
+    // The role dialog is a separate activity; didChangeAppLifecycleState
+    // re-checks when the user comes back. This delayed check covers devices
+    // that return control immediately.
+    await Future.delayed(const Duration(milliseconds: 800));
+    await _refreshAssistant();
+    if (mounted && !_isDefaultAssistant) {
+      _snack('Not changed. You can pick it later in Settings → Default apps.');
+    }
+  }
+
+  void _snack(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
+  }
 
   double _totalGB() {
     double total = 0;
@@ -86,7 +168,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   Widget build(BuildContext context) {
     final isCloud = _mode == AgentMode.cloud;
-    final active = ModelRegistry.defaultForDevice(_stats['ramGB'] as int?);
+    final active = _activeSpec;
     return Scaffold(
       backgroundColor: AppTheme.bg,
       body: SafeArea(
@@ -122,8 +204,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       padding: const EdgeInsets.fromLTRB(24, 8, 24, 0),
                       child: Text(
                         isCloud
-                            ? 'Using Gemini via your API key. Switch to Local to run entirely on-device.'
-                            : 'Running entirely on-device. Switch to Cloud to use a Gemini API key for stronger tool calling.',
+                            ? 'Using a cloud model with your own key. Switch to Local to run entirely on-device.'
+                            : 'Running on-device. Switch to Cloud for stronger tool calling — no model download.',
                         style: GoogleFonts.interTight(
                           fontSize: 11.5,
                           height: 1.45,
@@ -135,25 +217,32 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     SettingsGroup(children: [
                       SettingsCell(
                         isFirst: true,
-                        title: active.displayName,
-                        subtitle: active.supportsVision
-                            ? 'Vision-capable · default for this device'
-                            : 'Text · default for this device',
-                        trailing: Text(
-                          active.sizeLabel,
-                          style: GoogleFonts.jetBrainsMono(
-                              fontSize: 11.5, color: AppTheme.ink2),
-                        ),
+                        title: _provider == LlmProvider.local
+                            ? active.displayName
+                            : 'Agent',
+                        subtitle: _provider == LlmProvider.local
+                            ? (active.supportsVision
+                                ? 'Vision-capable · on-device'
+                                : 'Text · on-device')
+                            : 'Cloud model · private to you',
+                        trailing: _provider == LlmProvider.local
+                            ? Text(
+                                active.sizeLabel,
+                                style: GoogleFonts.jetBrainsMono(
+                                    fontSize: 11.5, color: AppTheme.ink2),
+                              )
+                            : const Pill('API', style: PillStyle.outline),
                       ),
-                      SettingsCell(
-                        title: 'Inference engine',
-                        subtitle: 'MediaPipe · GPU delegate',
-                        trailing: Text(
-                          'GPU',
-                          style: GoogleFonts.jetBrainsMono(
-                              fontSize: 11.5, color: AppTheme.ink2),
+                      if (_provider == LlmProvider.local)
+                        SettingsCell(
+                          title: 'Inference engine',
+                          subtitle: 'LiteRT-LM · on-device',
+                          trailing: Text(
+                            active.preferredBackend.name.toUpperCase(),
+                            style: GoogleFonts.jetBrainsMono(
+                                fontSize: 11.5, color: AppTheme.ink2),
+                          ),
                         ),
-                      ),
                       SettingsCell(
                         title: 'Manage models',
                         subtitle:
@@ -166,7 +255,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         ),
                       ),
                     ]),
-                    if (isCloud) ...[
+                    if (_provider == LlmProvider.gemini) ...[
                       const SectionHeader('API KEY'),
                       SettingsGroup(children: [
                         SettingsCell(
@@ -184,16 +273,91 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         ),
                       ]),
                     ],
+                    const SectionHeader('THIS DEVICE'),
+                    SettingsGroup(children: [
+                      SettingsCell(
+                        isFirst: true,
+                        title: 'Memory',
+                        subtitle: 'Used to pick a model that fits',
+                        trailing: Text(
+                          _stats['ramGB'] == null ? '—' : '${_stats['ramGB']} GB',
+                          style: GoogleFonts.jetBrainsMono(
+                              fontSize: 11.5, color: AppTheme.ink2),
+                        ),
+                      ),
+                      SettingsCell(
+                        title: 'Free storage',
+                        subtitle: 'Models are stored on this device',
+                        trailing: Text(
+                          _stats['storageFree'] == null
+                              ? '—'
+                              : '${((_stats['storageFree'] as num) / 1024).toStringAsFixed(1)} GB',
+                          style: GoogleFonts.jetBrainsMono(
+                              fontSize: 11.5, color: AppTheme.ink2),
+                        ),
+                      ),
+                    ]),
+                    const SectionHeader('PERSONAL'),
+                    SettingsGroup(children: [
+                      SettingsCell(
+                        isFirst: true,
+                        title: 'AI provider',
+                        subtitle: _provider == LlmProvider.local
+                            ? 'On-device model · no network'
+                            : 'Cloud · ${kProviderSpecs[_provider]!.label}',
+                        trailing: const Icon(Icons.chevron_right_rounded,
+                            color: AppTheme.muted, size: 22),
+                        onTap: () async {
+                          await Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                                builder: (_) => const ProviderSetupScreen()),
+                          );
+                          _loadData();
+                        },
+                      ),
+                      SettingsCell(
+                        title: 'Memory',
+                        subtitle: _memoryCount == 0
+                            ? 'Nothing saved yet — say “my name is …”'
+                            : '$_memoryCount '
+                                '${_memoryCount == 1 ? "fact" : "facts"} remembered',
+                        trailing: const Icon(Icons.chevron_right_rounded,
+                            color: AppTheme.muted, size: 22),
+                        onTap: () async {
+                          await Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                                builder: (_) => const MemoryScreen()),
+                          );
+                          _loadData();
+                        },
+                      ),
+                      SettingsCell(
+                        title: 'Default assistant',
+                        subtitle: _isDefaultAssistant
+                            ? 'Opens on the assistant gesture / long-press home'
+                            : 'Make Local Agent your phone’s assistant',
+                        trailing: _isDefaultAssistant
+                            ? const Pill('ACTIVE', style: PillStyle.success)
+                            : const Icon(Icons.chevron_right_rounded,
+                                color: AppTheme.muted, size: 22),
+                        onTap: _requestAssistantRole,
+                      ),
+                    ]),
                     const SectionHeader('BEHAVIOR'),
                     SettingsGroup(children: [
                       SettingsCell(
                         isFirst: true,
                         title: 'Confirm before actions',
                         subtitle:
-                            'Ask before file edits, app launches, settings changes',
+                            'Ask before calls, messages, uninstalls and calendar events',
                         trailing: DesignSwitch(
                           value: _confirmActions,
-                          onChanged: (v) => setState(() => _confirmActions = v),
+                          onChanged: (v) {
+                            setState(() => _confirmActions = v);
+                            AppSettings.setConfirmBeforeActions(v);
+                          },
                         ),
                       ),
                       SettingsCell(
@@ -201,7 +365,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         subtitle: 'Show response as it generates',
                         trailing: DesignSwitch(
                           value: _streamTokens,
-                          onChanged: (v) => setState(() => _streamTokens = v),
+                          onChanged: (v) {
+                            setState(() => _streamTokens = v);
+                            AppSettings.setStreamTokens(v);
+                          },
                         ),
                       ),
                       SettingsCell(
@@ -209,7 +376,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         subtitle: 'Stored locally · never uploaded',
                         trailing: DesignSwitch(
                           value: _saveHistory,
-                          onChanged: (v) => setState(() => _saveHistory = v),
+                          onChanged: (v) {
+                            setState(() => _saveHistory = v);
+                            AppSettings.setSaveHistory(v);
+                          },
                         ),
                       ),
                     ]),
@@ -219,7 +389,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         isFirst: true,
                         title: 'Version',
                         trailing: Text(
-                          '0.4.2 · build 217',
+                          '1.0.0 · build 1',
                           style: GoogleFonts.jetBrainsMono(
                               fontSize: 11.5, color: AppTheme.ink2),
                         ),

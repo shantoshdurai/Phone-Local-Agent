@@ -20,7 +20,7 @@ class DatabaseService {
     String path = join(await getDatabasesPath(), 'agent_memory.db');
     return await openDatabase(
       path,
-      version: 4,
+      version: 6,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
     );
@@ -49,6 +49,27 @@ class DatabaseService {
         )
       ''');
       await db.execute('ALTER TABLE chat_history ADD COLUMN session_id INTEGER');
+    }
+    if (oldVersion < 5) {
+      await db.execute('''
+        CREATE TABLE memories (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          text TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          use_count INTEGER NOT NULL DEFAULT 0
+        )
+      ''');
+    }
+    if (oldVersion < 6) {
+      await db.execute('''
+        CREATE TABLE notes (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          title TEXT NOT NULL,
+          body TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        )
+      ''');
     }
   }
 
@@ -99,6 +120,25 @@ class DatabaseService {
         agent_action TEXT,
         result TEXT,
         timestamp TEXT
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE memories (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        text TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        use_count INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE notes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL,
+        created_at TEXT NOT NULL
       )
     ''');
   }
@@ -156,9 +196,10 @@ class DatabaseService {
   // Session Management
   Future<int> createSession(String title) async {
     final db = await database;
-    // Check if we need to cleanup (limit to 5)
+    // Keep history bounded, but generously. The old cap of 5 silently deleted
+    // conversations after a day of use.
     final sessions = await db.query('sessions', orderBy: 'created_at ASC');
-    if (sessions.length >= 5) {
+    if (sessions.length >= 100) {
       final oldestId = sessions.first['id'] as int;
       await deleteSession(oldestId);
     }
@@ -238,6 +279,86 @@ class DatabaseService {
       'memory',
       orderBy: 'timestamp DESC',
       limit: limit,
+    );
+  }
+
+  // --- Persistent facts (the user-facing "memory") ---
+  //
+  // Distinct from the legacy `memory` table above, which logged agent actions
+  // for debugging. These are durable statements about the user that get
+  // injected into the system prompt on every turn.
+
+  Future<List<Map<String, dynamic>>> getFacts() async {
+    final db = await database;
+    return await db.query('memories', orderBy: 'created_at DESC');
+  }
+
+  Future<int> insertFact(String text, String kind) async {
+    final db = await database;
+    return await db.insert('memories', {
+      'text': text,
+      'kind': kind,
+      'created_at': DateTime.now().toIso8601String(),
+      'use_count': 0,
+    });
+  }
+
+  Future<void> deleteFact(int id) async {
+    final db = await database;
+    await db.delete('memories', where: 'id = ?', whereArgs: [id]);
+  }
+
+  Future<void> clearFacts() async {
+    final db = await database;
+    await db.delete('memories');
+  }
+
+  Future<void> bumpFactUse(int id) async {
+    final db = await database;
+    await db.rawUpdate(
+        'UPDATE memories SET use_count = use_count + 1 WHERE id = ?', [id]);
+  }
+
+  /// Drop the oldest, least-used facts once the store grows past [cap].
+  Future<void> trimFacts({int cap = 60}) async {
+    final db = await database;
+    final count = Sqflite.firstIntValue(
+          await db.rawQuery('SELECT COUNT(*) FROM memories'),
+        ) ??
+        0;
+    if (count <= cap) return;
+    final excess = count - cap;
+    final rows = await db.query('memories',
+        orderBy: 'use_count ASC, created_at ASC', limit: excess);
+    for (final row in rows) {
+      await db.delete('memories', where: 'id = ?', whereArgs: [row['id']]);
+    }
+  }
+
+  // --- Notes ---
+
+  Future<int> insertNote(String title, String body) async {
+    final db = await database;
+    return await db.insert('notes', {
+      'title': title,
+      'body': body,
+      'created_at': DateTime.now().toIso8601String(),
+    });
+  }
+
+  Future<List<Map<String, dynamic>>> getNotes({int limit = 10}) async {
+    final db = await database;
+    return await db.query('notes',
+        orderBy: 'created_at DESC', limit: limit.clamp(1, 50));
+  }
+
+  /// Deletes notes whose title or body contains [query]. Returns the count.
+  Future<int> deleteNotes(String query) async {
+    final db = await database;
+    return await db.delete(
+      'notes',
+      where: 'title LIKE ? OR body LIKE ?',
+      whereArgs: ['%$query%', '%$query%'],
     );
   }
 }

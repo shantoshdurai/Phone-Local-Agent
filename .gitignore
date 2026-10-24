@@ -48,3 +48,19 @@ app.*.map.json
 # Local backup files from in-place edits
 *.orig
 *.patch
+
+# ── Secrets / signing ──────────────────────────────────────────────────────
+# Never commit these. An API key in the repo (or worse, bundled as an asset)
+# is one of the fastest ways to get an app pulled, and a leaked upload key
+# lets someone else publish as you.
+.env
+.env.*
+android/key.properties
+*.jks
+*.keystore
+android/app/upload-keystore.jks
+
+# ── Local tooling ──────────────────────────────────────────────────────────
+# Permission-repair reports from the sandbox diagnostic.
+.acl-recovery/
+

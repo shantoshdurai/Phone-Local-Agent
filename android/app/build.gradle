@@ -5,47 +5,91 @@ plugins {
     id "dev.flutter.flutter-gradle-plugin"
 }
 
+// Release signing is read from android/key.properties (git-ignored).
+// Create it with:
+//   storeFile=../local-agent-release.jks
+//   storePassword=…
+//   keyAlias=localagent
+//   keyPassword=…
+// Without this file the release build falls back to debug signing so
+// `flutter run --release` still works locally — but an artifact built that way
+// must never be uploaded to Play.
+def keystoreProperties = new Properties()
+def keystorePropertiesFile = rootProject.file("key.properties")
+def hasReleaseKeystore = keystorePropertiesFile.exists()
+if (hasReleaseKeystore) {
+    keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+}
+
 android {
     namespace = "com.localagent.local_agent"
     compileSdk = 36
     ndkVersion = "28.2.13676358"
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_1_8
-        targetCompatibility = JavaVersion.VERSION_1_8
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
 
     kotlinOptions {
-        jvmTarget = JavaVersion.VERSION_1_8
+        // Kotlin's Gradle DSL expects a string here, not a JavaVersion enum.
+        jvmTarget = "17"
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "com.localagent.local_agent"
-        // You can update the following values to match your application needs.
-        // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = 24
+        // Play requires targeting the current API level. Flutter's default is
+        // bumped with each stable release; pinning it to the SDK value keeps
+        // the two in sync instead of drifting.
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+
+        // LLM inference is native and 64-bit only in practice. Shipping x86_64
+        // as well roughly doubles the APK for a target audience that never
+        // needs it (Play delivers per-ABI splits from an AAB anyway).
+        ndk {
+            abiFilters "arm64-v8a", "armeabi-v7a"
+        }
+    }
+
+    signingConfigs {
+        release {
+            if (hasReleaseKeystore) {
+                keyAlias = keystoreProperties["keyAlias"]
+                keyPassword = keystoreProperties["keyPassword"]
+                storeFile = file(keystoreProperties["storeFile"])
+                storePassword = keystoreProperties["storePassword"]
+            }
+        }
     }
 
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.debug
+            signingConfig = hasReleaseKeystore
+                ? signingConfigs.release
+                : signingConfigs.debug
+
+            // R8 shrinks the Dart/Java surface and strips unused plugin code.
+            // The keep rules in proguard-rules.pro protect LiteRT/MediaPipe
+            // and protobuf, which are reached via reflection/JNI.
+            minifyEnabled = true
+            shrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
         }
+    }
+
+    bundle {
+        language { enableSplit = true }
+        density { enableSplit = true }
+        abi { enableSplit = true }
     }
 }
 
 flutter {
     source = "../.."
-}
-
-configurations.all {
-    resolutionStrategy {
-        force 'androidx.core:core:1.13.1'
-        force 'androidx.core:core-ktx:1.13.1'
-    }
 }

@@ -97,7 +97,10 @@ flutter:
 
   # To add assets to your application, add an assets section, like this:
   assets:
-    - .env
+    # NOTE: `.env` used to be bundled here. It shipped whatever API keys were
+    # in the developer's local file inside every APK, and nothing read it at
+    # runtime. Removed deliberately — do not add it back.
+    #
     # RAG embedding model + tokenizer vocab — bundled in-APK so the app
     # works fully offline from install. See assets/embeddings/README.md
     # for the exact two files to drop in before building.

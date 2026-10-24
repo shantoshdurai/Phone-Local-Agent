@@ -1,7 +1,6 @@
-import 'dart:typed_data';
-
 import 'package:flutter/foundation.dart';
 
+import '../tool_runtime.dart';
 import 'embedding_service.dart';
 import 'tool_docs.dart';
 
@@ -64,13 +63,21 @@ class ToolIndex {
       }
 
       _entries.clear();
-      for (final doc in kToolDocs) {
-        final vec = await svc.embed(doc.embedText);
+      // Iterate the catalogue, not the docs: a tool added to kToolCatalog but
+      // not yet to kToolDocs still becomes retrievable, using its declaration
+      // description as the embedding text. That removed a whole class of
+      // "retrieval never suggests the new tool" bugs.
+      final docsByName = {for (final d in kToolDocs) d.name: d};
+      for (final entry in kToolCatalog) {
+        final name = entry['name'] as String;
+        final text = docsByName[name]?.embedText ??
+            '$name: ${entry['description']}';
+        final vec = await svc.embed(text);
         if (vec == null) {
-          debugPrint('[ToolIndex] failed to embed ${doc.name} — skipping');
+          debugPrint('[ToolIndex] failed to embed $name — skipping');
           continue;
         }
-        _entries.add(_IndexedTool(doc.name, vec));
+        _entries.add(_IndexedTool(name, vec));
       }
       _ready = _entries.isNotEmpty;
       debugPrint('[ToolIndex] built — ${_entries.length} tool embeddings');

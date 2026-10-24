@@ -196,7 +196,7 @@ class _MessageBubbleState extends State<MessageBubble>
     if (message.evalTime != null) {
       parts.add('${message.evalTime!.toStringAsFixed(1)}S');
     }
-    parts.add('LOCAL · ON-DEVICE');
+    parts.add(message.isCloud ? 'CLOUD' : 'LOCAL · ON-DEVICE');
     return parts.join('  ·  ');
   }
 

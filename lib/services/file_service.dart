@@ -1,8 +1,10 @@
 import 'dart:io';
-import 'package:path_provider/path_provider.dart';
-import 'package:permission_handler/permission_handler.dart';
-import 'package:http/http.dart' as http;
+import 'dart:isolate';
+
 import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
+
+import 'permission_flow.dart';
 
 class FileMetadata {
   final String path;
@@ -33,155 +35,171 @@ class FileMetadata {
   }
 }
 
-class FileService {
-  Future<bool> requestPermissions() async {
-    if (Platform.isAndroid) {
-      if (await Permission.manageExternalStorage.request().isGranted) {
-        return true;
+/// Runs off the UI isolate: walking DCIM/Pictures can touch thousands of
+/// entries, and doing that synchronously on the main isolate is a guaranteed
+/// jank spike (or an ANR when the folder is large).
+List<Map<String, dynamic>> _scanFolders(List<String> roots) {
+  final out = <Map<String, dynamic>>[];
+  const maxFiles = 4000;
+  for (final root in roots) {
+    if (out.length >= maxFiles) break;
+    final dir = Directory(root);
+    try {
+      if (!dir.existsSync()) continue;
+      for (final entity in dir.listSync(recursive: true, followLinks: false)) {
+        if (out.length >= maxFiles) break;
+        if (entity is! File) continue;
+        try {
+          final stat = entity.statSync();
+          final name = p.basename(entity.path);
+          final ext = p.extension(name);
+          out.add({
+            'path': entity.path,
+            'name': name,
+            'type': ext.isEmpty ? '' : ext.substring(1).toLowerCase(),
+            'size': stat.size,
+            'modified': stat.modified.millisecondsSinceEpoch,
+            'accessed': stat.accessed.millisecondsSinceEpoch,
+          });
+        } catch (_) {
+          // Unreadable entry (permission, race) — skip it, keep scanning.
+        }
       }
-      if (await Permission.storage.request().isGranted) {
-        return true;
-      }
-      return false;
+    } catch (_) {
+      // Folder not readable with the granted permission level. This is
+      // expected for Download/Documents on Android 13+ without a SAF grant.
     }
-    return true; 
+  }
+  return out;
+}
+
+class FileService {
+  /// Media access only. The app deliberately does **not** ask for "all files
+  /// access" (MANAGE_EXTERNAL_STORAGE): Play restricts it to file managers,
+  /// and a general assistant is not a qualifying use case.
+  Future<bool> requestPermissions() async {
+    if (!Platform.isAndroid) return true;
+    if (await PermissionFlow.isGranted(PermTopic.media)) return true;
+    return PermissionFlow.request(PermTopic.media);
   }
 
   Future<List<FileMetadata>> indexDocuments() async {
-    final hasPermission = await requestPermissions();
-    if (!hasPermission) {
-      throw Exception('Storage permissions denied.');
+    if (Platform.isAndroid && !await requestPermissions()) {
+      throw const FileAccessException(
+        'Photo and media access is off. Enable it in Settings to let the '
+        'agent look at files.',
+      );
     }
 
-    List<FileMetadata> files = [];
-    List<String> scanPaths = [];
-
+    final roots = <String>[];
     if (Platform.isAndroid) {
-      scanPaths = [
-        '/storage/emulated/0/Documents',
-        '/storage/emulated/0/Download',
-        '/storage/emulated/0/DCIM/Screenshots',
-        '/storage/emulated/0/Pictures/Screenshots',
-      ];
+      // Media collections readable with READ_MEDIA_* on 13+. Download and
+      // Documents are intentionally absent: they require a SAF tree grant,
+      // which the app does not have.
+      roots.addAll([
+        '/storage/emulated/0/DCIM',
+        '/storage/emulated/0/Pictures',
+        '/storage/emulated/0/Movies',
+        '/storage/emulated/0/Music',
+      ]);
     } else {
       final docDir = await getApplicationDocumentsDirectory();
-      scanPaths = [docDir.path];
+      roots.add(docDir.path);
     }
 
-    for (String path in scanPaths) {
-      final targetDir = Directory(path);
-      if (await targetDir.exists()) {
-        try {
-          final entities = targetDir.listSync(recursive: true, followLinks: false);
-          for (var entity in entities) {
-            if (entity is File) {
-              final stat = await entity.stat();
-              files.add(FileMetadata(
-                path: entity.path,
-                name: entity.path.split('/').last,
-                type: entity.path.split('.').last,
-                size: stat.size,
-                modifiedDate: stat.modified,
-                lastAccessedDate: stat.accessed,
-              ));
-            }
-          }
-        } catch (e) {
-        }
-      }
-    }
-
-    return files;
+    final raw = await Isolate.run(() => _scanFolders(roots));
+    return raw
+        .map((m) => FileMetadata(
+              path: m['path'] as String,
+              name: m['name'] as String,
+              type: m['type'] as String,
+              size: m['size'] as int,
+              modifiedDate: DateTime.fromMillisecondsSinceEpoch(
+                  m['modified'] as int),
+              lastAccessedDate: DateTime.fromMillisecondsSinceEpoch(
+                  m['accessed'] as int),
+            ))
+        .toList();
   }
 
   Future<String> readFileContent(String filePath) async {
     try {
       final file = File(filePath);
-      if (await file.exists()) {
-        final content = await file.readAsString();
-        if (content.length > 2000) {
-          return '${content.substring(0, 2000)}... [truncated]';
-        }
-        return content;
+      if (!await file.exists()) return 'File not found.';
+      // Read at most 8 KB, then trim: never buffer a whole video into memory
+      // just to return 2000 characters.
+      final raf = await file.open();
+      try {
+        final bytes = await raf.read(8192);
+        final text = String.fromCharCodes(bytes);
+        return text.length > 2000 ? '${text.substring(0, 2000)}… [truncated]' : text;
+      } finally {
+        await raf.close();
       }
     } catch (e) {
       return 'Error reading file: $e';
     }
-    return 'File not found.';
   }
 
   Future<bool> deleteFile(String filePath) async {
     try {
       final file = File(filePath);
-      if (await file.exists()) {
-        await file.delete();
-        return true;
-      }
-      return false;
-    } catch (e) {
+      if (!await file.exists()) return false;
+      await file.delete();
+      return true;
+    } catch (_) {
       return false;
     }
   }
 
   Future<List<Map<String, dynamic>>> getRecentScreenshots({int limit = 5}) async {
-    final screenshotDirs = [
-      '/storage/emulated/0/DCIM/Screenshots',
-      '/storage/emulated/0/Pictures/Screenshots',
-    ];
+    if (Platform.isAndroid && !await requestPermissions()) {
+      return const [];
+    }
+    final roots = Platform.isAndroid
+        ? const [
+            '/storage/emulated/0/DCIM/Screenshots',
+            '/storage/emulated/0/Pictures/Screenshots',
+          ]
+        : <String>[];
 
-    final List<Map<String, dynamic>> results = [];
-    for (final dirPath in screenshotDirs) {
-      final dir = Directory(dirPath);
-      if (!await dir.exists()) continue;
+    final all = <Map<String, dynamic>>[];
+    for (final root in roots) {
+      final dir = Directory(root);
       try {
-        final files = dir
-            .listSync()
-            .whereType<File>()
-            .where((f) {
-              final n = f.path.toLowerCase();
-              return n.endsWith('.png') || n.endsWith('.jpg') || n.endsWith('.jpeg');
-            })
-            .toList()
-          ..sort((a, b) => b.statSync().modified.compareTo(a.statSync().modified));
-        for (final file in files) {
-          if (results.length >= limit) break;
-          final stat = file.statSync();
-          results.add({
-            'name': file.path.split('/').last,
-            'path': file.path,
-            'sizeKB': (stat.size / 1024).round(),
-            'modified': stat.modified.toIso8601String(),
-          });
+        if (!await dir.exists()) continue;
+        for (final f in dir.listSync().whereType<File>()) {
+          final n = f.path.toLowerCase();
+          if (!(n.endsWith('.png') ||
+              n.endsWith('.jpg') ||
+              n.endsWith('.jpeg') ||
+              n.endsWith('.webp'))) {
+            continue;
+          }
+          try {
+            final stat = f.statSync();
+            all.add({
+              'name': p.basename(f.path),
+              'path': f.path,
+              'sizeKB': (stat.size / 1024).round(),
+              'modified': stat.modified.toIso8601String(),
+              '_ts': stat.modified.millisecondsSinceEpoch,
+            });
+          } catch (_) {}
         }
       } catch (_) {}
-      if (results.length >= limit) break;
     }
-    return results;
+    all.sort((a, b) => (b['_ts'] as int).compareTo(a['_ts'] as int));
+    return all
+        .take(limit)
+        .map((m) => Map<String, dynamic>.from(m)..remove('_ts'))
+        .toList();
   }
+}
 
-  Future<String> downloadFile(String url, String fileName) async {
-    try {
-      final hasPermission = await requestPermissions();
-      if (!hasPermission) return 'Error: Storage permission denied';
-
-      final response = await http.get(Uri.parse(url));
-      if (response.statusCode == 200) {
-        String downloadPath = '';
-        if (Platform.isAndroid) {
-          downloadPath = '/storage/emulated/0/Download';
-        } else {
-          final dir = await getApplicationDocumentsDirectory();
-          downloadPath = dir.path;
-        }
-
-        final file = File(p.join(downloadPath, fileName));
-        await file.writeAsBytes(response.bodyBytes);
-        return 'Successfully downloaded to: ${file.path}';
-      } else {
-        return 'Error: Failed to download file. Status code: ${response.statusCode}';
-      }
-    } catch (e) {
-      return 'Error downloading file: $e';
-    }
-  }
+class FileAccessException implements Exception {
+  final String message;
+  const FileAccessException(this.message);
+  @override
+  String toString() => message;
 }

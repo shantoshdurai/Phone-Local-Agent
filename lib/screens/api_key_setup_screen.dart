@@ -6,7 +6,10 @@ import 'package:url_launcher/url_launcher.dart';
 import '../theme/app_theme.dart';
 import '../widgets/glass_widgets.dart';
 import '../services/agent_mode.dart';
+import '../services/agent_service.dart' show kCloudModelSentinel;
+import '../services/llm/provider_config.dart';
 import 'home_screen.dart';
+import 'splash_screen.dart';
 
 /// Reached either at the end of onboarding (fromOnboarding=true → continues to
 /// HomeScreen on save) or from Settings (pops back on save). Validates the
@@ -71,53 +74,80 @@ class _ApiKeySetupScreenState extends State<ApiKeySetupScreen> {
       setState(() => _error = 'Paste a key first.');
       return;
     }
-    if (!key.startsWith('AIza')) {
+    // Google has more than one key format now (the classic `AIza…` and newer
+    // `AQ.…` strings), so only reject obviously-incomplete input instead of
+    // gating on a prefix that changes.
+    if (key.length < 20 || key.contains(' ')) {
       setState(() =>
-          _error = 'Google API keys usually start with “AIza”. Double-check?');
+          _error = 'That doesn\'t look like a complete API key. Copy the whole '
+              'string from AI Studio.');
       return;
     }
     setState(() {
       _busy = true;
       _error = null;
     });
+
+    var verified = false;
+    var networkProblem = false;
     try {
       final model = GenerativeModel(
         model: 'gemini-2.5-flash',
         apiKey: key,
         generationConfig: GenerationConfig(maxOutputTokens: 4),
       );
-      final res = await model.generateContent([Content.text('hi')]);
-      // Any non-throwing response means the key authenticated. We don't care
-      // about the actual generated text.
+      final res = await model
+          .generateContent([Content.text('hi')])
+          .timeout(const Duration(seconds: 20));
+      // Any non-throwing response means the key authenticated.
       res.text;
-
-      await AgentModeStore.writeApiKey(key);
-      // Make sure mode is cloud even if a stale local-mode value was set.
-      await AgentModeStore.write(AgentMode.cloud);
-
-      if (!mounted) return;
-      final nav = Navigator.of(context);
-      if (widget.fromOnboarding) {
-        nav.pushAndRemoveUntil(
-          MaterialPageRoute(builder: (_) => const HomeScreen()),
-          (_) => false,
-        );
-      } else if (nav.canPop()) {
-        nav.pop(true);
-      } else {
-        // Reached when main.dart routed straight here at boot (cloud mode
-        // but no key on disk). There's nothing under us, so swap to home.
-        nav.pushAndRemoveUntil(
-          MaterialPageRoute(builder: (_) => const HomeScreen()),
-          (_) => false,
-        );
-      }
+      verified = true;
     } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _busy = false;
-        _error = _friendlyError(e);
-      });
+      final msg = e.toString();
+      networkProblem = msg.contains('SocketException') ||
+          msg.contains('Failed host lookup') ||
+          msg.contains('TimeoutException') ||
+          msg.contains('ClientException');
+      if (!networkProblem) {
+        if (!mounted) return;
+        setState(() {
+          _busy = false;
+          _error = _friendlyError(e);
+        });
+        return;
+      }
+    }
+
+    // Persist either way: an unverified key is still usable next time the
+    // device is online, and blocking the whole flow on a captive-portal Wi-Fi
+    // is worse than saving it with a warning.
+    await AgentModeStore.writeApiKey(key);
+    await AgentModeStore.write(AgentMode.cloud);
+    // The provider layer must agree, otherwise the next boot would resolve a
+    // different backend than the key belongs to.
+    await ProviderStore.writeProvider(LlmProvider.gemini);
+
+    if (!mounted) return;
+    if (!verified && networkProblem) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Saved. We couldn\'t verify the key while offline — '
+              'it will be checked on your first message.'),
+        ),
+      );
+    }
+
+    final nav = Navigator.of(context);
+    if (widget.fromOnboarding || !nav.canPop()) {
+      // Cloud chat lives behind the sentinel; HomeScreen is the *local* model
+      // downloader and would strand a cloud user in a 1.7 GB download.
+      nav.pushAndRemoveUntil(
+        MaterialPageRoute(
+            builder: (_) => const SplashScreen(modelFileName: kCloudModelSentinel)),
+        (_) => false,
+      );
+    } else {
+      nav.pop(true);
     }
   }
 
@@ -137,18 +167,33 @@ class _ApiKeySetupScreenState extends State<ApiKeySetupScreen> {
     return 'Validation failed: $msg';
   }
 
-  void _back() {
+  /// Leave cloud setup without a key.
+  ///
+  /// Previously this only navigated. Because onboarding had *already* written
+  /// `mode = cloud`, the next launch found "cloud with no key" and dropped the
+  /// user straight back here — an unescapable loop. Switching the stored mode
+  /// back to local is what actually makes "skip" mean something.
+  Future<void> _back() async {
+    await ProviderStore.writeProvider(LlmProvider.local);
+    if (!mounted) return;
     final nav = Navigator.of(context);
-    if (widget.fromOnboarding || !nav.canPop()) {
-      // No route below us (boot route, or onboarding flow) — drop them at
-      // Home rather than freezing on an unpoppable stack.
+    if (nav.canPop()) {
+      nav.pop();
+    } else {
       nav.pushAndRemoveUntil(
         MaterialPageRoute(builder: (_) => const HomeScreen()),
         (_) => false,
       );
-    } else {
-      nav.pop();
     }
+  }
+
+  Future<void> _useLocalInstead() async {
+    await ProviderStore.writeProvider(LlmProvider.local);
+    if (!mounted) return;
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const HomeScreen()),
+      (_) => false,
+    );
   }
 
   @override
@@ -371,18 +416,8 @@ class _ApiKeySetupScreenState extends State<ApiKeySetupScreen> {
                   if (widget.fromOnboarding) ...[
                     const SizedBox(height: 12),
                     GhostButton(
-                      onPressed: _busy
-                          ? null
-                          : () async {
-                              await AgentModeStore.write(AgentMode.local);
-                              if (!context.mounted) return;
-                              Navigator.of(context).pushAndRemoveUntil(
-                                MaterialPageRoute(
-                                    builder: (_) => const HomeScreen()),
-                                (_) => false,
-                              );
-                            },
-                      label: 'Use local model instead',
+                      onPressed: _busy ? null : _useLocalInstead,
+                      label: 'Use a local model instead',
                     ).animate().fadeIn(delay: 600.ms),
                   ],
                   const SizedBox(height: 12),
@@ -390,7 +425,7 @@ class _ApiKeySetupScreenState extends State<ApiKeySetupScreen> {
                     child: GestureDetector(
                       onTap: _openConsole,
                       child: Text(
-                        'Free tier: 1,500 requests/day · ai.google.dev',
+                        'Free tier on Google AI Studio · aistudio.google.com',
                         style: AppTextStyles.small.copyWith(
                           color: AppTheme.glassMuted,
                           fontSize: 12,

@@ -12,6 +12,11 @@ class ChatMessage {
   // same position the streamed text already occupied — no flash, no replay.
   final bool skipEntrance;
 
+  /// True for replies that came from a cloud provider. Drives the
+  /// "CLOUD" vs "LOCAL · ON-DEVICE" footer; getting this wrong is a trust bug,
+  /// not a cosmetic one.
+  final bool isCloud;
+
   ChatMessage({
     required this.text,
     required this.isUser,
@@ -22,5 +27,6 @@ class ChatMessage {
     this.evalTime,
     this.toolName,
     this.skipEntrance = false,
+    this.isCloud = false,
   });
 }

@@ -1,5 +1,11 @@
 # Models — what we've shipped, what we dropped, why
 
+> **Note:** the runtime source of truth is `lib/services/model_registry.dart`
+> (`ModelRegistry.all`). This file is the history/reasoning log; if the two
+> disagree on sampling or token caps, the registry wins. The app now also
+> recommends per device (RAM / cores / free storage) instead of shipping a
+> single "current" model — see `lib/services/device_capability.dart`.
+
 Running log of every model this app has been wired against. Add the next row when you swap. Source of truth for "what's been tried so far" so we don't loop.
 
 ## Currently shipping

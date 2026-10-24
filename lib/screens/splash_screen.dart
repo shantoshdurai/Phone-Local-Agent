@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../services/agent_service.dart';
+import '../services/assistant_service.dart';
 import 'chat_screen.dart';
 import 'home_screen.dart';
 
@@ -11,7 +12,15 @@ import 'home_screen.dart';
 /// few seconds of render time.
 class SplashScreen extends StatefulWidget {
   final String modelFileName;
-  const SplashScreen({super.key, required this.modelFileName});
+
+  /// Assistant/share invocation to hand to the chat screen once it is ready.
+  final LaunchEvent? launchEvent;
+
+  const SplashScreen({
+    super.key,
+    required this.modelFileName,
+    this.launchEvent,
+  });
 
   @override
   State<SplashScreen> createState() => _SplashScreenState();
@@ -20,7 +29,11 @@ class SplashScreen extends StatefulWidget {
 class _SplashScreenState extends State<SplashScreen> {
   String? _error;
   String _stage = 'Loading model';
-  int _elapsed = 0;
+
+  /// A ValueNotifier instead of `setState`: the elapsed-seconds readout used to
+  /// rebuild the whole splash subtree once a second while the main isolate was
+  /// already saturated loading the model.
+  final ValueNotifier<int> _elapsed = ValueNotifier<int>(0);
   Timer? _ticker;
   StreamSubscription? _statusSub;
 
@@ -28,7 +41,7 @@ class _SplashScreenState extends State<SplashScreen> {
   void initState() {
     super.initState();
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (mounted) setState(() => _elapsed += 1);
+      _elapsed.value += 1;
     });
     // Mirror AgentService status text (e.g. "Warming up...") so the user
     // sees that the load is making progress, not stalled.
@@ -44,6 +57,7 @@ class _SplashScreenState extends State<SplashScreen> {
   void dispose() {
     _ticker?.cancel();
     _statusSub?.cancel();
+    _elapsed.dispose();
     super.dispose();
   }
 
@@ -55,8 +69,10 @@ class _SplashScreenState extends State<SplashScreen> {
       Navigator.of(context).pushReplacement(
         PageRouteBuilder(
           transitionDuration: const Duration(milliseconds: 220),
-          pageBuilder: (_, __, ___) =>
-              ChatScreen(modelFileName: widget.modelFileName),
+          pageBuilder: (_, __, ___) => ChatScreen(
+            modelFileName: widget.modelFileName,
+            launchEvent: widget.launchEvent,
+          ),
           transitionsBuilder: (_, anim, __, child) =>
               FadeTransition(opacity: anim, child: child),
         ),
@@ -94,26 +110,29 @@ class _SplashScreenState extends State<SplashScreen> {
                   ),
                 ),
                 const SizedBox(height: 8),
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withValues(alpha: 0.06),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Text(
-                    '${_elapsed}s',
-                    style: GoogleFonts.jetBrainsMono(
-                      color: Colors.white.withValues(alpha: 0.55),
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      letterSpacing: 0.5,
+                ValueListenableBuilder<int>(
+                  valueListenable: _elapsed,
+                  builder: (context, seconds, _) => Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.06),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      '${seconds}s',
+                      style: GoogleFonts.jetBrainsMono(
+                        color: Colors.white.withValues(alpha: 0.55),
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: 0.5,
+                      ),
                     ),
                   ),
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Loading on CPU. First open is a few seconds; later opens are instant.',
+                  'The model is loading into memory. This happens once per launch.',
                   textAlign: TextAlign.center,
                   style: GoogleFonts.outfit(
                     color: Colors.white.withValues(alpha: 0.32),
