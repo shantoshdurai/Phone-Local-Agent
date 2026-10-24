@@ -120,6 +120,49 @@ class AssistantService {
     }
   }
 
+  /// Opens Android's assistant chooser directly (falls back to Default apps).
+  Future<bool> openAssistantSettings() async {
+    try {
+      return await _channel.invokeMethod<bool>('openAssistantSettings') ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<bool> isOverlayGranted() async {
+    try {
+      return await _channel.invokeMethod<bool>('isOverlayGranted') ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<bool> openOverlaySettings() async {
+    try {
+      return await _channel.invokeMethod<bool>('openOverlaySettings') ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<bool> openBatterySettings() async {
+    try {
+      return await _channel.invokeMethod<bool>('openBatterySettings') ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<bool> isIgnoringBatteryOptimizations() async {
+    try {
+      return await _channel
+              .invokeMethod<bool>('isIgnoringBatteryOptimizations') ??
+          false;
+    } catch (_) {
+      return false;
+    }
+  }
+
   void _emit(LaunchEvent event) {
     _pending ??= event;
     if (!_events.isClosed) _events.add(event);

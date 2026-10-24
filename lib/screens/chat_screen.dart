@@ -22,6 +22,7 @@ import '../theme/app_theme.dart';
 import '../widgets/design_components.dart';
 import '../widgets/message_bubble.dart';
 import '../widgets/suggestions_list.dart';
+import 'assistant_setup_screen.dart';
 import 'home_screen.dart';
 import 'provider_setup_screen.dart';
 import 'settings_screen.dart';
@@ -582,8 +583,11 @@ class _ChatScreenState extends State<ChatScreen> {
         ],
       ),
     );
-    if (setup == true) {
-      await AssistantService.instance.requestDefaultAssistant();
+    if (setup == true && mounted) {
+      await Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => const AssistantSetupScreen()),
+      );
     }
   }
 

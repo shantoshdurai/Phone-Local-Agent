@@ -12,7 +12,9 @@ import '../services/model_downloader_service.dart';
 import '../services/model_registry.dart';
 import '../theme/app_theme.dart';
 import '../widgets/design_components.dart';
+import 'ai_apps_screen.dart';
 import 'api_key_setup_screen.dart';
+import 'assistant_setup_screen.dart';
 import 'home_screen.dart';
 import 'memory_screen.dart';
 import 'provider_setup_screen.dart';
@@ -130,32 +132,6 @@ class _SettingsScreenState extends State<SettingsScreen>
   }
 
   int _readyCount() => _modelReady.values.where((v) => v).length;
-
-  Future<void> _requestAssistantRole() async {
-    if (_isDefaultAssistant) {
-      _snack('Already your default assistant. Change it in system settings.');
-      return;
-    }
-    final opened = await AssistantService.instance.requestDefaultAssistant();
-    if (!opened) {
-      _snack('The default-assistant role needs Android 10 or newer.');
-      return;
-    }
-    // The role dialog is a separate activity; didChangeAppLifecycleState
-    // re-checks when the user comes back. This delayed check covers devices
-    // that return control immediately.
-    await Future.delayed(const Duration(milliseconds: 800));
-    await _refreshAssistant();
-    if (mounted && !_isDefaultAssistant) {
-      _snack('Not changed. You can pick it later in Settings → Default apps.');
-    }
-  }
-
-  void _snack(String message) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(message)));
-  }
 
   double _totalGB() {
     double total = 0;
@@ -334,15 +310,33 @@ class _SettingsScreenState extends State<SettingsScreen>
                         },
                       ),
                       SettingsCell(
-                        title: 'Default assistant',
+                        title: 'Assistant setup',
                         subtitle: _isDefaultAssistant
-                            ? 'Opens on the assistant gesture / long-press home'
-                            : 'Make Local Agent your phone’s assistant',
+                            ? 'Agent is your assistant'
+                            : 'Permissions for the power-button gesture',
                         trailing: _isDefaultAssistant
                             ? const Pill('ACTIVE', style: PillStyle.success)
                             : const Icon(Icons.chevron_right_rounded,
                                 color: AppTheme.muted, size: 22),
-                        onTap: _requestAssistantRole,
+                        onTap: () async {
+                          await Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                                builder: (_) => const AssistantSetupScreen()),
+                          );
+                          _loadData();
+                        },
+                      ),
+                      SettingsCell(
+                        title: 'AI apps',
+                        subtitle: 'Launch ChatGPT, Claude and others',
+                        trailing: const Icon(Icons.chevron_right_rounded,
+                            color: AppTheme.muted, size: 22),
+                        onTap: () => Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                              builder: (_) => const AiAppsScreen()),
+                        ),
                       ),
                     ]),
                     const SectionHeader('BEHAVIOR'),

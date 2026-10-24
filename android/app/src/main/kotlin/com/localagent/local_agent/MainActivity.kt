@@ -7,6 +7,8 @@ import android.content.pm.PackageManager
 import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
+import android.os.PowerManager
+import android.provider.Settings
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -60,6 +62,16 @@ class MainActivity : FlutterActivity() {
                     result.success(true)
                 }
                 "getClipboardImage" -> result.success(readClipboardImage())
+                "openAssistantSettings" -> result.success(openAssistantSettings())
+                "isOverlayGranted" -> result.success(
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M)
+                        Settings.canDrawOverlays(this) else true
+                )
+                "openOverlaySettings" -> result.success(openOverlaySettings())
+                "openBatterySettings" -> result.success(openBatterySettings())
+                "isIgnoringBatteryOptimizations" -> result.success(
+                    isIgnoringBatteryOptimizations()
+                )
                 else -> result.notImplemented()
             }
         }
@@ -169,8 +181,63 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    private fun isDefaultAssistant(): Boolean {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return false
+    // ── Assistant setup: the four system gates ──────────────────────────────
+
+    private fun openAssistantSettings(): Boolean {
+        val intents = listOf(
+            Intent(Settings.ACTION_VOICE_INPUT_SETTINGS),
+            Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS),
+            Intent(Settings.ACTION_SETTINGS)
+        )
+        for (intent in intents) {
+            try {
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                startActivity(intent)
+                return true
+            } catch (_: Exception) {
+                // Try the next, less specific screen.
+            }
+        }
+        return false
+    }
+
+    private fun openOverlaySettings(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return false
+        return try {
+            val intent = Intent(
+                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                Uri.parse("package:$packageName")
+            ).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+            startActivity(intent)
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun openBatterySettings(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return false
+        return try {
+            val intent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                .apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+            startActivity(intent)
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun isIgnoringBatteryOptimizations(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return true
+        return try {
+            val pm = getSystemService(PowerManager::class.java) ?: return false
+            pm.isIgnoringBatteryOptimizations(packageName)
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun isDefaultAssistant(): Boolean {        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return false
         val rm = getSystemService(RoleManager::class.java) ?: return false
         return rm.isRoleAvailable(RoleManager.ROLE_ASSISTANT) &&
             rm.isRoleHeld(RoleManager.ROLE_ASSISTANT)
