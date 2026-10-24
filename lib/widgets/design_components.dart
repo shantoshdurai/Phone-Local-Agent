@@ -346,7 +346,13 @@ class AppHeader extends StatelessWidget implements PreferredSizeWidget {
         children: [
           SizedBox(width: 36, height: 36, child: Center(child: leading ?? const SizedBox.shrink())),
           Expanded(child: Center(child: title)),
-          SizedBox(width: 36, height: 36, child: Center(child: trailing ?? const SizedBox.shrink())),
+          ConstrainedBox(
+            constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+            child: Align(
+              alignment: Alignment.centerRight,
+              child: trailing ?? const SizedBox.shrink(),
+            ),
+          ),
         ],
       ),
     );

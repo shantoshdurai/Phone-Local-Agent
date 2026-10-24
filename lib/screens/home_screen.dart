@@ -1,12 +1,16 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import '../services/database_service.dart';
 import '../services/model_downloader_service.dart';
 import '../services/device_service.dart';
 import '../services/model_registry.dart';
 import '../theme/app_theme.dart';
 import '../widgets/design_components.dart';
+import 'settings_screen.dart';
 import 'splash_screen.dart';
+import 'voice_mode_screen.dart';
+import 'wake_word_settings_screen.dart';
 
 /// 04 · Pick a model — main entry point when no model is loaded yet.
 class HomeScreen extends StatefulWidget {
@@ -119,12 +123,12 @@ class _HomeScreenState extends State<HomeScreen> {
         child: Column(
           children: [
             AppHeader(
-              leading: HeaderIconButton(
-                icon: Icons.arrow_back_rounded,
-                onPressed: Navigator.canPop(context)
-                    ? () => Navigator.pop(context)
-                    : null,
-              ),
+              leading: Navigator.canPop(context)
+                  ? HeaderIconButton(
+                      icon: Icons.arrow_back_rounded,
+                      onPressed: () => Navigator.pop(context),
+                    )
+                  : null,
               title: Text(
                 'Local Agent',
                 style: GoogleFonts.interTight(
@@ -134,6 +138,39 @@ class _HomeScreenState extends State<HomeScreen> {
                   color: AppTheme.ink,
                 ),
               ),
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  HeaderIconButton(
+                    icon: Icons.mic_none_rounded,
+                    onPressed: () async {
+                      final sessionId =
+                          await DatabaseService().createSession('Voice Launcher');
+                      if (context.mounted) {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) =>
+                                VoiceModeScreen(sessionId: sessionId),
+                          ),
+                        );
+                      }
+                    },
+                  ),
+                  const SizedBox(width: 4),
+                  HeaderIconButton(
+                    icon: Icons.settings_outlined,
+                    onPressed: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const SettingsScreen(),
+                        ),
+                      );
+                    },
+                  ),
+                ],
+              ),
             ),
             Expanded(
               child: SingleChildScrollView(
@@ -142,6 +179,67 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    // Wake Word Fast Launcher Hero Card
+                    DesignCard(
+                      onTap: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => const WakeWordSettingsScreen(),
+                          ),
+                        );
+                      },
+                      child: Row(
+                        children: [
+                          Container(
+                            width: 40,
+                            height: 40,
+                            decoration: BoxDecoration(
+                              color: AppTheme.accent.withValues(alpha: 0.15),
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: const Icon(Icons.bolt_rounded,
+                                color: AppTheme.accent, size: 22),
+                          ),
+                          const SizedBox(width: 14),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  children: [
+                                    Text(
+                                      'Wake Word Launcher',
+                                      style: GoogleFonts.interTight(
+                                        fontSize: 15,
+                                        fontWeight: FontWeight.w600,
+                                        color: AppTheme.ink,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    const Pill('NO LLM NEEDED',
+                                        style: PillStyle.solid),
+                                  ],
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  'Launch ChatGPT, Claude & AI apps with "Hey Jarvis" without downloading 2GB models.',
+                                  style: GoogleFonts.interTight(
+                                    fontSize: 12,
+                                    color: AppTheme.ink2,
+                                    height: 1.35,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          const Icon(Icons.chevron_right_rounded,
+                              color: AppTheme.muted, size: 20),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 24),
                     Text(
                       'Select Model',
                       style: GoogleFonts.interTight(
@@ -160,7 +258,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         color: AppTheme.ink2,
                       ),
                     ),
-                    const SizedBox(height: 24),
+                    const SizedBox(height: 20),
                     ...ModelRegistry.all.map((spec) => Padding(
                           padding: const EdgeInsets.only(bottom: 14),
                           child: _modelCard(

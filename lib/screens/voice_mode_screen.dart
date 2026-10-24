@@ -5,9 +5,12 @@ import 'package:flutter_tts/flutter_tts.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 import '../services/agent_service.dart';
+import '../services/assistant_router_service.dart';
 import '../services/database_service.dart';
+import '../services/wake_word_launcher_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/design_components.dart';
+import 'wake_word_settings_screen.dart';
 
 /// 08 · Voice mode — hands-free loop. Listen → think → speak → listen.
 enum _VoicePhase { idle, listening, thinking, speaking, error, muted }
@@ -24,12 +27,14 @@ class _VoiceModeScreenState extends State<VoiceModeScreen>
     with TickerProviderStateMixin {
   final AgentService _agent = AgentService();
   final DatabaseService _db = DatabaseService();
+  final AssistantRouterService _router = AssistantRouterService();
   final SpeechToText _stt = SpeechToText();
   final FlutterTts _tts = FlutterTts();
 
   late final AnimationController _ringController;
   StreamSubscription? _statusSub;
 
+  AIProvider _activeProvider = AIProvider.gemini;
   _VoicePhase _phase = _VoicePhase.idle;
   String _statusLabel = 'TAP TO START';
   String _userTranscript = '';
@@ -54,9 +59,11 @@ class _VoiceModeScreenState extends State<VoiceModeScreen>
         final msg = e.errorMsg.toLowerCase();
         if (msg.contains('timeout') ||
             msg.contains('no_match') ||
-            msg.contains('no match')) {
+            msg.contains('no match') ||
+            msg.contains('client') ||
+            msg.contains('busy')) {
           if (_phase == _VoicePhase.listening) {
-            Future.delayed(const Duration(milliseconds: 100), () {
+            Future.delayed(const Duration(milliseconds: 300), () {
               if (_phase == _VoicePhase.listening && !_disposed) {
                 _startListening();
               }
@@ -90,6 +97,11 @@ class _VoiceModeScreenState extends State<VoiceModeScreen>
     await _tts.setPitch(1.0);
     await _tts.setVolume(1.0);
     await _tts.awaitSpeakCompletion(true);
+
+    final def = await _router.getDefaultProvider();
+    if (!_disposed) {
+      setState(() => _activeProvider = def);
+    }
     _startListening();
   }
 
@@ -143,11 +155,62 @@ class _VoiceModeScreenState extends State<VoiceModeScreen>
     } catch (_) {}
     _setPhase(_VoicePhase.thinking, label: 'THINKING');
     try {
+      // 1. Direct App Wake Word check (e.g. "Hey Jarvis", "Hey Claude", "Hey ChatGPT")
+      final appMatch = await WakeWordLauncherService().matchWakeWord(text);
+      if (appMatch != null) {
+        if (appMatch.isInstalled) {
+          _setPhase(_VoicePhase.thinking,
+              label: 'LAUNCHING ${appMatch.binding.appName.toUpperCase()}');
+          await _tts.speak('Opening ${appMatch.binding.appName}');
+          await WakeWordLauncherService().launchAppForBinding(appMatch.binding);
+          await Future.delayed(const Duration(milliseconds: 600));
+          if (!_disposed && mounted && Navigator.canPop(context)) {
+            Navigator.pop(context);
+          }
+          return;
+        } else {
+          _setPhase(_VoicePhase.error,
+              label: '${appMatch.binding.appName.toUpperCase()} NOT INSTALLED');
+          await _tts.speak(
+              '${appMatch.binding.appName} is not installed on your phone.');
+          await Future.delayed(const Duration(seconds: 1));
+          _startListening();
+          return;
+        }
+      }
+
+      final match = await _router.parseWakeWord(text);
+      if (match.matched) {
+        setState(() => _activeProvider = match.provider);
+        _setPhase(_VoicePhase.thinking,
+            label: 'ROUTING TO ${match.provider.displayName.toUpperCase()}');
+      }
+
       await _db.saveMessage('user', text, widget.sessionId);
-      final response = await _agent.sendMessage(text, widget.sessionId);
+
+      final String replyText;
+      if (match.matched &&
+          match.provider != AIProvider.gemini &&
+          match.provider != AIProvider.local) {
+        replyText = await _router.executeQuery(
+          provider: match.provider,
+          prompt: match.cleanQuery,
+          sessionId: widget.sessionId,
+        );
+      } else {
+        if (!_agent.isReady) {
+          replyText =
+              "No model is downloaded yet. You can say Hey Jarvis, Hey Claude, or Hey ChatGPT to launch your installed AI apps. To chat with a local model, download one from the model screen.";
+        } else {
+          final response =
+              await _agent.sendMessage(match.cleanQuery, widget.sessionId);
+          replyText = response.text;
+        }
+      }
+
       if (_disposed) return;
-      final spoken = _stripForTts(response.text);
-      setState(() => _agentReply = response.text);
+      final spoken = _stripForTts(replyText);
+      setState(() => _agentReply = replyText);
       if (spoken.isEmpty) {
         _startListening();
         return;
@@ -247,12 +310,25 @@ class _VoiceModeScreenState extends State<VoiceModeScreen>
                 children: [
                   HeaderIconButton(icon: Icons.close_rounded, onPressed: _close),
                   Expanded(
-                    child: Center(child: Eyebrow('VOICE MODE · LOCAL')),
+                    child: Center(
+                      child: Eyebrow(
+                        'ASSISTANT · ${_activeProvider.displayName.toUpperCase()}',
+                      ),
+                    ),
                   ),
                   HeaderIconButton(
                     icon: Icons.settings_outlined,
                     size: 18,
-                    onPressed: () {},
+                    onPressed: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                            builder: (_) => const WakeWordSettingsScreen()),
+                      ).then((_) async {
+                        final def = await _router.getDefaultProvider();
+                        if (mounted) setState(() => _activeProvider = def);
+                      });
+                    },
                   ),
                 ],
               ),
@@ -286,6 +362,38 @@ class _VoiceModeScreenState extends State<VoiceModeScreen>
                             width: double.infinity,
                             child: _transcript(),
                           ),
+                        ),
+                        const SizedBox(height: 16),
+                        Wrap(
+                          alignment: WrapAlignment.center,
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            ActionChip(
+                              label: const Text('Say "Hey Jarvis"'),
+                              backgroundColor: AppTheme.surface2,
+                              side: const BorderSide(color: Colors.white12),
+                              labelStyle: GoogleFonts.interTight(
+                                  fontSize: 12, color: AppTheme.ink),
+                              onPressed: () => _handleSubmit('Hey Jarvis'),
+                            ),
+                            ActionChip(
+                              label: const Text('Say "Hey Claude"'),
+                              backgroundColor: AppTheme.surface2,
+                              side: const BorderSide(color: Colors.white12),
+                              labelStyle: GoogleFonts.interTight(
+                                  fontSize: 12, color: AppTheme.ink),
+                              onPressed: () => _handleSubmit('Hey Claude'),
+                            ),
+                            ActionChip(
+                              label: const Text('Say "Hey ChatGPT"'),
+                              backgroundColor: AppTheme.surface2,
+                              side: const BorderSide(color: Colors.white12),
+                              labelStyle: GoogleFonts.interTight(
+                                  fontSize: 12, color: AppTheme.ink),
+                              onPressed: () => _handleSubmit('Hey ChatGPT'),
+                            ),
+                          ],
                         ),
                       ],
                     ),

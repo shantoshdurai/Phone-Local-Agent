@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:async';
 import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
 // flutter_gemma exports a `ModelSpec` that collides with ours. We never need
 // the SDK's variant in this file, so hide it.
 import 'package:flutter_gemma/flutter_gemma.dart' hide ModelSpec;
@@ -60,6 +61,8 @@ class AgentService {
   // [initialize]; consulted by every public entry point so the cloud path
   // is taken regardless of which screen calls us.
   bool _cloudActive = false;
+
+  bool get isReady => _cloudActive ? _gemini.isReady : _model != null;
 
   // Forwarders that pipe GeminiService's streams into our own controllers
   // so ChatScreen only ever subscribes to AgentService.
@@ -379,12 +382,9 @@ class AgentService {
     } catch (e) {
       print('sendMessage failed natively. Attempting full model re-initialization: $e');
       // Model might have been corrupted by OS backgrounding. Re-initialize from disk!
-      if (_activeSpec != null) {
-        await initialize(_activeSpec!.fileName);
-        await loadSession(sessionId);
-        return await _sendMessageInternal(text, sessionId, imagePath: imagePath);
-      }
-      rethrow;
+      await initialize(_activeSpec.fileName);
+      await loadSession(sessionId);
+      return await _sendMessageInternal(text, sessionId, imagePath: imagePath);
     }
   }
 

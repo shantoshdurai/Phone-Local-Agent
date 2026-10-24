@@ -6,6 +6,7 @@ import '../widgets/design_components.dart';
 import '../services/agent_mode.dart';
 import 'api_key_setup_screen.dart';
 import 'home_screen.dart';
+import 'wake_word_settings_screen.dart';
 
 const _kOnboardingSeenKey = 'onboarding_seen_v1';
 
@@ -109,6 +110,34 @@ class _ModeSelectionScreenState extends State<ModeSelectionScreen> {
                 onPressed: _saving ? null : _confirm,
                 label: 'Continue',
                 isLoading: _saving,
+              ),
+              const SizedBox(height: 12),
+              Center(
+                child: TextButton.icon(
+                  onPressed: () async {
+                    if (_saving) return;
+                    setState(() => _saving = true);
+                    await AgentModeStore.write(AgentMode.local);
+                    final prefs = await SharedPreferences.getInstance();
+                    await prefs.setBool(_kOnboardingSeenKey, true);
+                    if (!context.mounted) return;
+                    Navigator.of(context).pushAndRemoveUntil(
+                      MaterialPageRoute(
+                        builder: (_) => const WakeWordSettingsScreen(),
+                      ),
+                      (_) => false,
+                    );
+                  },
+                  icon: const Icon(Icons.bolt_rounded, size: 16, color: AppTheme.accent),
+                  label: Text(
+                    'Skip to Wake Word Launcher (No LLM download)',
+                    style: GoogleFonts.interTight(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: AppTheme.ink,
+                    ),
+                  ),
+                ),
               ),
             ],
           ),

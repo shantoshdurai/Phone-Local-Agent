@@ -8,6 +8,7 @@ import '../theme/app_theme.dart';
 import '../widgets/design_components.dart';
 import 'api_key_setup_screen.dart';
 import 'home_screen.dart';
+import 'wake_word_settings_screen.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 /// 09 · Settings — agent mode toggle, active model, behavior switches, about.
@@ -184,6 +185,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         ),
                       ]),
                     ],
+                    const SectionHeader('ASSISTANT & WAKE WORDS'),
+                    SettingsGroup(children: [
+                      SettingsCell(
+                        isFirst: true,
+                        title: 'Assistant & Wake Words',
+                        subtitle:
+                            'Power button trigger, Hey Claude, Hey Grok, custom hotwords',
+                        trailing: const Icon(Icons.chevron_right_rounded,
+                            color: AppTheme.muted, size: 22),
+                        onTap: () => Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                              builder: (_) => const WakeWordSettingsScreen()),
+                        ),
+                      ),
+                    ]),
                     const SectionHeader('BEHAVIOR'),
                     SettingsGroup(children: [
                       SettingsCell(

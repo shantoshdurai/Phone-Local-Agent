@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -5,11 +6,16 @@ import 'screens/api_key_setup_screen.dart';
 import 'screens/home_screen.dart';
 import 'screens/intro_screen.dart';
 import 'screens/splash_screen.dart';
+import 'screens/voice_mode_screen.dart';
 import 'services/agent_mode.dart';
 import 'services/agent_service.dart';
+import 'services/assistant_router_service.dart';
+import 'services/database_service.dart';
 import 'services/model_downloader_service.dart';
 import 'services/model_registry.dart';
 import 'theme/app_theme.dart';
+
+final GlobalKey<NavigatorState> appNavigatorKey = GlobalKey<NavigatorState>();
 
 const _kOnboardingSeenKey = 'onboarding_seen_v1';
 const _kLastModelKey = 'last_used_model_file';
@@ -70,36 +76,82 @@ void main() async {
     }
   }
 
+  int? assistantSessionId;
+  final wasAssistant = await AssistantRouterService().wasLaunchedAsAssistant();
+  if (wasAssistant) {
+    try {
+      assistantSessionId = await DatabaseService().createSession('Voice Assistant');
+    } catch (_) {}
+  }
+
   runApp(MyApp(
     initialModel: initialModel,
     showOnboarding: !onboardingSeen,
     cloudNeedsKey: onboardingSeen && mode == AgentMode.cloud && apiKey == null,
+    assistantSessionId: assistantSessionId,
   ));
 }
 
-class MyApp extends StatelessWidget {
+class MyApp extends StatefulWidget {
   final String? initialModel;
   final bool showOnboarding;
   final bool cloudNeedsKey;
+  final int? assistantSessionId;
   const MyApp({
     super.key,
     this.initialModel,
     this.showOnboarding = false,
     this.cloudNeedsKey = false,
+    this.assistantSessionId,
   });
 
+  @override
+  State<MyApp> createState() => _MyAppState();
+}
+
+class _MyAppState extends State<MyApp> {
+  StreamSubscription? _assistantSub;
+
+  @override
+  void initState() {
+    super.initState();
+    _assistantSub =
+        AssistantRouterService().assistantEvents.listen((event) async {
+      if (event == 'assist') {
+        try {
+          final sessionId =
+              await DatabaseService().createSession('Voice Assistant');
+          appNavigatorKey.currentState?.push(
+            MaterialPageRoute(
+              builder: (_) => VoiceModeScreen(sessionId: sessionId),
+            ),
+          );
+        } catch (_) {}
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _assistantSub?.cancel();
+    super.dispose();
+  }
+
   Widget _resolveHome() {
-    if (showOnboarding) {
+    if (widget.assistantSessionId != null) {
+      return VoiceModeScreen(sessionId: widget.assistantSessionId!);
+    }
+    if (widget.showOnboarding) {
       return const IntroScreen();
     }
-    if (cloudNeedsKey) {
+    if (widget.cloudNeedsKey) {
       // Mode is cloud but no key on disk — drop straight into the key
       // entry screen. fromOnboarding=false so saving pops back; we then
       // catch them on the next launch via the splash path.
       return const ApiKeySetupScreen(fromOnboarding: false);
     }
-    if (initialModel != null) {
-      return SplashScreen(modelFileName: initialModel!);
+    if (widget.initialModel != null) {
+      return SplashScreen(modelFileName: widget.initialModel!);
     }
     return const HomeScreen();
   }
@@ -107,6 +159,7 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      navigatorKey: appNavigatorKey,
       title: 'Local Agent',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.darkTheme,
