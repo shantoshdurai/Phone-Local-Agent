@@ -107,7 +107,7 @@ class _AssistantSetupScreenState extends State<AssistantSetupScreen>
             ),
             Expanded(
               child: _loading
-                  ? const Center(
+                  ? Center(
                       child: SizedBox(
                         width: 20,
                         height: 20,

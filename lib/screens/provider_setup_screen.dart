@@ -233,7 +233,7 @@ class _ProviderSetupScreenState extends State<ProviderSetupScreen> {
                     ),
                   ),
                   trailing: ids[i] == _modelCtrl.text
-                      ? const Icon(Icons.check_rounded,
+                      ? Icon(Icons.check_rounded,
                           size: 18, color: AppTheme.ink)
                       : null,
                   onTap: () => Navigator.pop(ctx, ids[i]),
@@ -343,7 +343,7 @@ class _ProviderSetupScreenState extends State<ProviderSetupScreen> {
             ),
             Expanded(
               child: _loading
-                  ? const Center(
+                  ? Center(
                       child: SizedBox(
                         width: 20,
                         height: 20,
@@ -611,7 +611,7 @@ class _ProviderSetupScreenState extends State<ProviderSetupScreen> {
               hint: spec.defaultModel,
               label: 'MODEL',
               trailing: IconButton(
-                icon: const Icon(Icons.content_paste_rounded,
+                icon: Icon(Icons.content_paste_rounded,
                     size: 16, color: AppTheme.muted),
                 tooltip: 'Paste model id',
                 onPressed: () async {
@@ -691,6 +691,8 @@ class _ProviderSetupScreenState extends State<ProviderSetupScreen> {
                     hintStyle: GoogleFonts.interTight(
                         fontSize: 13, color: AppTheme.muted2),
                     border: InputBorder.none,
+                    enabledBorder: InputBorder.none,
+                    focusedBorder: InputBorder.none,
                     isDense: true,
                     contentPadding: const EdgeInsets.symmetric(vertical: 13),
                   ),

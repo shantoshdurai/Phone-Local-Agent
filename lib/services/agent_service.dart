@@ -295,6 +295,7 @@ class AgentService {
     String text,
     int sessionId, {
     String? imagePath,
+    String? forceTool,
   }) async {
     final current = await ProviderStore.readProvider();
     final candidates = await ProviderStore.otherConfiguredProviders(current);
@@ -307,6 +308,7 @@ class AgentService {
           text,
           sessionId,
           imagePath: imagePath,
+          forceTool: forceTool,
         );
         _statusController.add('');
         return result;
@@ -476,6 +478,7 @@ class AgentService {
     String text,
     int sessionId, {
     String? imagePath,
+    String? forceTool,
   }) async {
     // Remote turns must never fall into the local recovery path below: it
     // would call initialize() with a .task filename and silently switch the
@@ -483,7 +486,12 @@ class AgentService {
     final remote = _remote;
     if (remote != null) {
       try {
-        return await remote.sendMessage(text, sessionId, imagePath: imagePath);
+        return await remote.sendMessage(
+          text,
+          sessionId,
+          imagePath: imagePath,
+          forceTool: forceTool,
+        );
       } on RemoteUnavailable catch (e) {
         // The selected provider cannot serve us at all (dead key, no usable
         // model). Try any other provider the user has already configured, for
@@ -492,6 +500,7 @@ class AgentService {
           text,
           sessionId,
           imagePath: imagePath,
+          forceTool: forceTool,
         );
         if (fallback != null) return fallback;
         _statusController.add('');
@@ -499,7 +508,8 @@ class AgentService {
       }
     }
     try {
-      return await _sendMessageInternal(text, sessionId, imagePath: imagePath);
+      return await _sendMessageInternal(text, sessionId,
+          imagePath: imagePath, forceTool: forceTool);
     } catch (e) {
       final s = e.toString();
       final recoverable = s.contains('Previous invocation') ||
@@ -518,7 +528,7 @@ class AgentService {
         await _rebuildChat(const []);
         _chatIsPristine = false;
         return await _sendMessageInternal(text, sessionId,
-            imagePath: imagePath);
+            imagePath: imagePath, forceTool: forceTool);
       } catch (e2) {
         debugPrint('[AgentService] retry after rebuild failed: $e2');
         rethrow;
@@ -530,10 +540,12 @@ class AgentService {
     String text,
     int sessionId, {
     String? imagePath,
+    String? forceTool,
   }) async {
     final remote = _remote;
     if (remote != null) {
-      return remote.sendMessage(text, sessionId, imagePath: imagePath);
+      return remote.sendMessage(text, sessionId,
+          imagePath: imagePath, forceTool: forceTool);
     }
 
     if (_chat == null) throw Exception('Model not initialized');
@@ -642,7 +654,10 @@ class AgentService {
         debugPrint('ToolIndex retrieval skipped: $e');
       }
     }
-    final String promptText = '$freshFactLine$hintLine$text';
+    final forceHint = forceTool == 'search_web'
+        ? '[Use the search_web tool for this request.]\n\n'
+        : '';
+    final String promptText = '$freshFactLine$hintLine$forceHint$text';
 
     Message userMessage;
     if (imagePath != null && imagePath.isNotEmpty) {

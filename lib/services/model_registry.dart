@@ -191,7 +191,65 @@ class ModelRegistry {
     toolBudget: 14,
   );
 
-  static const List<ModelSpec> all = [phi4Mini, qwen2_5_1_5b];
+  // ── Hugging Face additions (verified URLs) ────────────────────────────────
+
+  /// Tiny model for 3–4 GB phones / low storage. Chat only: a 0.5B model is
+  /// not dependable at tool calling, so we do not pretend it is.
+  static const ModelSpec qwen2_5_0_5b = ModelSpec(
+    id: 'qwen2.5-0.5b',
+    displayName: 'Qwen 2.5 0.5B',
+    fileName: 'Qwen2.5-0.5B-Instruct_multi-prefill-seq_q8_ekv1280.task',
+    url:
+        'https://huggingface.co/litert-community/Qwen2.5-0.5B-Instruct/resolve/main/Qwen2.5-0.5B-Instruct_multi-prefill-seq_q8_ekv1280.task',
+    sizeMB: 521,
+    tagline: 'Smallest download. Chat only, no tools (~520 MB).',
+    modelType: ModelType.qwen,
+    fileType: ModelFileType.task,
+    preferredBackend: PreferredBackend.cpu,
+    supportsVision: false,
+    supportsTools: false,
+    isThinking: false,
+    maxTokens: 1280,
+    temperature: 0.8,
+    topK: 40,
+    topP: 0.95,
+    minRamGB: 2,
+    baselineTps: 22.0,
+    toolBudget: 0,
+  );
+
+  /// Reasoning-tuned Qwen distill with a 4096-token KV window — the biggest
+  /// local context we ship, which leaves room for a real tool catalogue.
+  static const ModelSpec deepseekR1Distill1_5b = ModelSpec(
+    id: 'deepseek-r1-distill-qwen-1.5b',
+    displayName: 'DeepSeek R1 Distill 1.5B',
+    fileName:
+        'DeepSeek-R1-Distill-Qwen-1.5B_multi-prefill-seq_q8_ekv4096.task',
+    url:
+        'https://huggingface.co/litert-community/DeepSeek-R1-Distill-Qwen-1.5B/resolve/main/DeepSeek-R1-Distill-Qwen-1.5B_multi-prefill-seq_q8_ekv4096.task',
+    sizeMB: 1749,
+    tagline: 'Reasoning-tuned, 4K context for longer tool chains (~1.7 GB).',
+    modelType: ModelType.qwen,
+    fileType: ModelFileType.task,
+    preferredBackend: PreferredBackend.cpu,
+    supportsVision: false,
+    supportsTools: true,
+    isThinking: true,
+    maxTokens: 4096,
+    temperature: 0.6,
+    topK: 40,
+    topP: 0.95,
+    minRamGB: 4,
+    baselineTps: 9.0,
+    toolBudget: 12,
+  );
+
+  static const List<ModelSpec> all = [
+    phi4Mini,
+    qwen2_5_1_5b,
+    deepseekR1Distill1_5b,
+    qwen2_5_0_5b,
+  ];
 
   static ModelSpec byFileName(String fileName) {
     return all.firstWhere(

@@ -190,28 +190,14 @@ class _HomeScreenState extends State<HomeScreen> {
         child: Column(
           children: [
             AppHeader(
-              // Always give a way out. When this screen is reached with
-              // `pushAndRemoveUntil` (onboarding → "run on this phone"), there
-              // is nothing to pop, which used to leave the user stuck with only
-              // a refresh button.
-              leading: HeaderIconButton(
-                icon: Icons.arrow_back_rounded,
-                onPressed: () {
-                  final nav = Navigator.of(context);
-                  if (nav.canPop()) {
-                    nav.pop();
-                  } else {
-                    nav.pushReplacement(
-                      MaterialPageRoute(
-                        builder: (_) =>
-                            const ProviderSetupScreen(fromOnboarding: true),
-                      ),
-                    );
-                  }
-                },
-              ),
+              leading: Navigator.canPop(context)
+                  ? HeaderIconButton(
+                      icon: Icons.arrow_back_rounded,
+                      onPressed: () => Navigator.pop(context),
+                    )
+                  : null,
               title: Text(
-                'Models',
+                'Model hub',
                 style: GoogleFonts.interTight(
                   fontSize: 17,
                   fontWeight: FontWeight.w600,
@@ -232,7 +218,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             Expanded(
               child: _loading
-                  ? const Center(
+                  ? Center(
                       child: SizedBox(
                         width: 20,
                         height: 20,
@@ -249,7 +235,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            'Model store',
+                            'Model hub',
                             style: GoogleFonts.interTight(
                               fontSize: 27,
                               fontWeight: FontWeight.w600,
@@ -259,9 +245,9 @@ class _HomeScreenState extends State<HomeScreen> {
                           ),
                           const SizedBox(height: 6),
                           Text(
-                            'Models run entirely on this phone. '
-                            'Sizes are downloads; each needs roughly that much '
-                            'free storage.',
+                            'On-device models from Hugging Face\'s '
+                            'litert-community, matched to this phone. Sizes are '
+                            'downloads; each needs roughly that much free storage.',
                             style: GoogleFonts.interTight(
                               fontSize: 13,
                               height: 1.5,
@@ -498,7 +484,7 @@ class _ModelCard extends StatelessWidget {
                   minHeight: 6,
                   backgroundColor: AppTheme.surface3,
                   valueColor:
-                      const AlwaysStoppedAnimation<Color>(AppTheme.ink),
+                      AlwaysStoppedAnimation<Color>(AppTheme.ink),
                 ),
               ),
               const SizedBox(height: 8),
@@ -542,7 +528,7 @@ class _ModelCard extends StatelessWidget {
                     child: IconButton(
                       tooltip: 'Delete model',
                       onPressed: onDelete,
-                      icon: const Icon(Icons.delete_outline_rounded,
+                      icon: Icon(Icons.delete_outline_rounded,
                           size: 18, color: AppTheme.muted),
                     ),
                   ),

@@ -214,7 +214,7 @@ class _ApiKeySetupScreenState extends State<ApiKeySetupScreen> {
                   Row(
                     children: [
                       IconButton(
-                        icon: const Icon(Icons.arrow_back_rounded,
+                        icon: Icon(Icons.arrow_back_rounded,
                             color: AppTheme.glassInk2),
                         onPressed: _busy ? null : _back,
                       ),
@@ -248,7 +248,7 @@ class _ApiKeySetupScreenState extends State<ApiKeySetupScreen> {
                         ),
                       ],
                     ),
-                    child: const Icon(Icons.vpn_key_rounded,
+                    child: Icon(Icons.vpn_key_rounded,
                         color: AppTheme.glassMagenta, size: 32),
                   ).animate().scale(
                         duration: 600.ms,
@@ -353,7 +353,7 @@ class _ApiKeySetupScreenState extends State<ApiKeySetupScreen> {
                             const Spacer(),
                             if (_existingMasked != null && !_busy)
                               TextButton.icon(
-                                icon: const Icon(Icons.delete_outline_rounded,
+                                icon: Icon(Icons.delete_outline_rounded,
                                     size: 16, color: AppTheme.accentError),
                                 label: Text(
                                   'Remove',
@@ -390,7 +390,7 @@ class _ApiKeySetupScreenState extends State<ApiKeySetupScreen> {
                       child: Row(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Icon(Icons.error_outline_rounded,
+                          Icon(Icons.error_outline_rounded,
                               color: AppTheme.accentError, size: 18),
                           const SizedBox(width: 10),
                           Expanded(

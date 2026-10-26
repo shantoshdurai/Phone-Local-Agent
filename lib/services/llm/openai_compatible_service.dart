@@ -174,6 +174,7 @@ class OpenAiCompatibleService implements RemoteAgent {
     String text,
     int sessionId, {
     String? imagePath,
+    String? forceTool,
   }) async {
     if (!isReady) {
       throw StateError('${_config.label} is not configured.');
@@ -234,8 +235,11 @@ class OpenAiCompatibleService implements RemoteAgent {
 
     try {
       for (var hop = 0; hop < _maxToolHops; hop++) {
-        final completion =
-            await _streamCompletion(messages, modelOverride: visionModel);
+        final completion = await _streamCompletion(
+          messages,
+          modelOverride: visionModel,
+          forceTool: hop == 0 ? forceTool : null,
+        );
         totalChars += completion.text.length;
 
         if (_stopRequested) {
@@ -347,11 +351,12 @@ class OpenAiCompatibleService implements RemoteAgent {
   Future<_Completion> _streamCompletion(
     List<Map<String, dynamic>> messages, {
     String? modelOverride,
+    String? forceTool,
   }) async {
     var transientAttempts = 0;
     while (true) {
       try {
-        return await _streamOnce(messages, modelOverride);
+        return await _streamOnce(messages, modelOverride, forceTool);
       } on _ApiError catch (e) {
         // The account cannot use this model (Groq returns 403 with an empty
         // body for models outside the plan). Move down the chain once.
@@ -383,17 +388,27 @@ class OpenAiCompatibleService implements RemoteAgent {
   }
 
   Future<_Completion> _streamOnce(
-      List<Map<String, dynamic>> messages, String? modelOverride) async {
+      List<Map<String, dynamic>> messages, String? modelOverride,
+      String? forceTool) async {
     final uri = Uri.parse(_endpoint());
     final model = modelOverride ?? _models[_modelIndex];
+    final allTools = _toolsPayload();
+    final tools = forceTool == null
+        ? allTools
+        : allTools
+            .where((t) =>
+                (t['function'] as Map<String, dynamic>)['name'] == forceTool)
+            .toList();
     final payload = <String, dynamic>{
       'model': model,
       'messages': messages,
       'stream': true,
       'temperature': 0.3,
       'max_tokens': _maxOutputTokens,
-      'tools': _toolsPayload(),
-      'tool_choice': 'auto',
+      'tools': tools,
+      // "Search" toggle: force the web tool on the first hop, then go back to
+      // auto for the summary hop.
+      'tool_choice': forceTool == null ? 'auto' : 'required',
     };
 
     // Measured against a live Groq key: gpt-oss streams chain-of-thought

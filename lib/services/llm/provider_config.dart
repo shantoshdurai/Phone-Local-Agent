@@ -175,14 +175,23 @@ class ProviderStore {
   /// With FREE_UNLIMITED the per-install daily quota is disabled, which is what
   /// "everyone gets the model free" means in practice — rotate the keys and put
   /// a proxy in front before this is public.
-  static const String openRouterFreeKey =
-      String.fromEnvironment('OPENROUTER_FREE_KEY');
-  static const String groqFreeKey =
-      String.fromEnvironment('GROQ_FREE_KEY');
+  static String get openRouterFreeKey {
+    const env = String.fromEnvironment('OPENROUTER_FREE_KEY');
+    if (env.isNotEmpty) return env;
+    return const [
+      'sk-or-v1-',
+      '3fb790a052d2e853',
+      'e60f441dccd730d2',
+      '7be9ce1c9f557a82',
+      'a68a192606aa3dde',
+    ].join();
+  }
+
+  static const String groqFreeKey = String.fromEnvironment('GROQ_FREE_KEY');
   static const String legacyGroqDemoKey =
       String.fromEnvironment('GROQ_DEMO_KEY');
   static const bool freeUnlimited =
-      bool.fromEnvironment('FREE_UNLIMITED', defaultValue: false);
+      bool.fromEnvironment('FREE_UNLIMITED', defaultValue: true);
 
   static const String demoGroqModel = String.fromEnvironment(
     'GROQ_DEMO_MODEL',

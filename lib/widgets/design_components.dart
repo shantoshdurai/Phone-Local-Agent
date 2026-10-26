@@ -197,7 +197,7 @@ class SecondaryButton extends StatelessWidget {
         color: Colors.transparent,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(12),
-          side: const BorderSide(color: AppTheme.border),
+          side: BorderSide(color: AppTheme.border),
         ),
         child: InkWell(
           borderRadius: BorderRadius.circular(12),
@@ -340,7 +340,7 @@ class AppHeader extends StatelessWidget implements PreferredSizeWidget {
       padding: const EdgeInsets.symmetric(horizontal: 16),
       decoration: BoxDecoration(
         color: AppTheme.bg,
-        border: divider ? const Border(bottom: BorderSide(color: AppTheme.border)) : null,
+        border: divider ? Border(bottom: BorderSide(color: AppTheme.border)) : null,
       ),
       child: Row(
         children: [
@@ -455,7 +455,7 @@ class SettingsCell extends StatelessWidget {
     );
     final decorated = Container(
       decoration: BoxDecoration(
-        border: isFirst ? null : const Border(top: BorderSide(color: AppTheme.border)),
+        border: isFirst ? null : Border(top: BorderSide(color: AppTheme.border)),
       ),
       child: row,
     );

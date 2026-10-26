@@ -11,12 +11,13 @@ import '../services/memory_service.dart';
 import '../services/model_downloader_service.dart';
 import '../services/model_registry.dart';
 import '../theme/app_theme.dart';
+import '../widgets/appearance_sheet.dart';
 import '../widgets/design_components.dart';
-import 'ai_apps_screen.dart';
 import 'api_key_setup_screen.dart';
 import 'assistant_setup_screen.dart';
 import 'home_screen.dart';
 import 'memory_screen.dart';
+import 'onboarding/onboarding_screen.dart';
 import 'provider_setup_screen.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -220,10 +221,10 @@ class _SettingsScreenState extends State<SettingsScreen>
                           ),
                         ),
                       SettingsCell(
-                        title: 'Manage models',
+                        title: 'Model Hub (Open Models)',
                         subtitle:
                             '${_readyCount()} downloaded · ${_totalGB().toStringAsFixed(1)} GB total',
-                        trailing: const Icon(Icons.chevron_right_rounded,
+                        trailing: Icon(Icons.chevron_right_rounded,
                             color: AppTheme.muted, size: 22),
                         onTap: () => Navigator.push(
                           context,
@@ -238,7 +239,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                           isFirst: true,
                           title: 'Gemini API key',
                           subtitle: _apiKeyMasked ?? 'Not set — tap to add',
-                          trailing: const Icon(Icons.chevron_right_rounded,
+                          trailing: Icon(Icons.chevron_right_rounded,
                               color: AppTheme.muted, size: 22),
                           onTap: () async {
                             await Navigator.of(context).push(MaterialPageRoute(
@@ -281,7 +282,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                         subtitle: _provider == LlmProvider.local
                             ? 'On-device model · no network'
                             : 'Cloud · ${kProviderSpecs[_provider]!.label}',
-                        trailing: const Icon(Icons.chevron_right_rounded,
+                        trailing: Icon(Icons.chevron_right_rounded,
                             color: AppTheme.muted, size: 22),
                         onTap: () async {
                           await Navigator.push(
@@ -298,7 +299,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                             ? 'Nothing saved yet — say “my name is …”'
                             : '$_memoryCount '
                                 '${_memoryCount == 1 ? "fact" : "facts"} remembered',
-                        trailing: const Icon(Icons.chevron_right_rounded,
+                        trailing: Icon(Icons.chevron_right_rounded,
                             color: AppTheme.muted, size: 22),
                         onTap: () async {
                           await Navigator.push(
@@ -310,13 +311,20 @@ class _SettingsScreenState extends State<SettingsScreen>
                         },
                       ),
                       SettingsCell(
+                        title: 'Appearance',
+                        subtitle: '${AppTheme.palette.name} · tap to change',
+                        trailing: Icon(Icons.chevron_right_rounded,
+                            color: AppTheme.muted, size: 22),
+                        onTap: () => showAppearanceSheet(context),
+                      ),
+                      SettingsCell(
                         title: 'Assistant setup',
                         subtitle: _isDefaultAssistant
                             ? 'Agent is your assistant'
                             : 'Permissions for the power-button gesture',
                         trailing: _isDefaultAssistant
                             ? const Pill('ACTIVE', style: PillStyle.success)
-                            : const Icon(Icons.chevron_right_rounded,
+                            : Icon(Icons.chevron_right_rounded,
                                 color: AppTheme.muted, size: 22),
                         onTap: () async {
                           await Navigator.push(
@@ -326,17 +334,6 @@ class _SettingsScreenState extends State<SettingsScreen>
                           );
                           _loadData();
                         },
-                      ),
-                      SettingsCell(
-                        title: 'AI apps',
-                        subtitle: 'Launch ChatGPT, Claude and others',
-                        trailing: const Icon(Icons.chevron_right_rounded,
-                            color: AppTheme.muted, size: 22),
-                        onTap: () => Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                              builder: (_) => const AiAppsScreen()),
-                        ),
                       ),
                     ]),
                     const SectionHeader('BEHAVIOR'),
@@ -389,8 +386,19 @@ class _SettingsScreenState extends State<SettingsScreen>
                         ),
                       ),
                       SettingsCell(
+                        title: 'Replay onboarding',
+                        subtitle: 'Walk through setup again',
+                        trailing: Icon(Icons.chevron_right_rounded,
+                            color: AppTheme.muted, size: 22),
+                        onTap: () => Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                              builder: (_) => const OnboardingScreen()),
+                        ),
+                      ),
+                      SettingsCell(
                         title: 'Source on GitHub',
-                        trailing: const Icon(Icons.chevron_right_rounded,
+                        trailing: Icon(Icons.chevron_right_rounded,
                             color: AppTheme.muted, size: 22),
                         onTap: () => launchUrl(
                           Uri.parse(

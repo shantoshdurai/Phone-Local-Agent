@@ -132,7 +132,7 @@ class GhostButton extends StatelessWidget {
         onPressed: onPressed,
         style: OutlinedButton.styleFrom(
           foregroundColor: AppTheme.glassInk,
-          side: const BorderSide(color: AppTheme.glassBorder, width: 1.0),
+          side: BorderSide(color: AppTheme.glassBorder, width: 1.0),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(12),
           ),

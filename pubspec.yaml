@@ -72,6 +72,7 @@ dependencies:
   # Native libs add ~10MB/ABI; model + vocab are downloaded on first run
   # into ApplicationDocumentsDirectory/models/embeddings/, not bundled.
   onnxruntime: ^1.4.1
+  ffi: ^2.2.0
 
 dev_dependencies:
   flutter_test:
@@ -106,6 +107,8 @@ flutter:
     # for the exact two files to drop in before building.
     - assets/embeddings/minilm-l6-v2.onnx
     - assets/embeddings/vocab.txt
+    - assets/models/needle3.cact
+    - assets/models/whistle.cact
   #   - images/a_dot_burr.jpeg
   #   - images/a_dot_ham.jpeg
 

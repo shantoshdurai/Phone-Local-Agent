@@ -11,6 +11,8 @@ import 'package:speech_to_text/speech_recognition_result.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 
 import '../services/agent_service.dart';
+import '../services/needle/needle_service.dart';
+import '../services/tool_runtime.dart';
 import '../services/assistant_service.dart';
 import '../services/database_service.dart';
 import '../services/permission_flow.dart';
@@ -366,7 +368,43 @@ class _VoiceModeScreenState extends State<VoiceModeScreen>
 
     try {
       await _db.saveMessage('user', text, widget.sessionId);
-      final response = await _agent.sendMessage(text, widget.sessionId);
+
+      final AgentResponse response;
+      bool handledByNeedle = false;
+      String? needleReply;
+
+      if (NeedleService.instance.isReady) {
+        final needleRes = await NeedleService.instance.complete(text);
+        final calls = (needleRes?['function_calls'] as List?) ?? [];
+        if (calls.isNotEmpty) {
+          handledByNeedle = true;
+          final replies = <String>[];
+          for (final rawCall in calls) {
+            final call = Map<String, dynamic>.from(rawCall as Map);
+            final name = call['name'] as String;
+            final args =
+                Map<String, dynamic>.from(call['arguments'] as Map? ?? {});
+            final result = await ToolRuntime.instance.execute(name, args);
+            final direct =
+                ToolRuntime.instance.formatDirect(name, args, result);
+            if (direct != null && direct.isNotEmpty) {
+              replies.add(direct);
+            } else if (result.containsKey('result')) {
+              replies.add(result['result'].toString());
+            } else {
+              replies.add('Done.');
+            }
+          }
+          needleReply = replies.join('\n');
+          await _db.saveMessage('assistant', needleReply, widget.sessionId);
+        }
+      }
+
+      if (handledByNeedle && needleReply != null) {
+        response = AgentResponse(needleReply, 'Needle 3', 0);
+      } else {
+        response = await _agent.sendMessage(text, widget.sessionId);
+      }
       if (_disposed) return;
 
       final spoken = _stripForTts(response.text);
@@ -545,7 +583,7 @@ class _VoiceModeScreenState extends State<VoiceModeScreen>
                 children: [
                   HeaderIconButton(icon: Icons.close_rounded, onPressed: _close),
                   const Expanded(
-                    child: Center(child: Eyebrow('VOICE MODE · ON-DEVICE')),
+                    child: Center(child: Eyebrow('VOICE MODE')),
                   ),
                   // Reserved slot keeps the eyebrow optically centered.
                   const SizedBox(width: 36, height: 36),
@@ -555,39 +593,49 @@ class _VoiceModeScreenState extends State<VoiceModeScreen>
             Expanded(
               child: Container(
                 width: double.infinity,
-                decoration: const BoxDecoration(
+                decoration: BoxDecoration(
                   gradient: RadialGradient(
                     radius: 0.95,
                     center: Alignment(0, -0.55),
-                    colors: [Color(0xFF161616), AppTheme.bg],
+                    colors: [const Color(0xFF161616), AppTheme.bg],
                     stops: [0.0, 0.62],
                   ),
                 ),
                 child: Stack(
                   children: [
-                    Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        GestureDetector(
+                    // The orb is centred in the whole stage, independent of how
+                    // long the caption below it gets.
+                    Positioned.fill(
+                      child: Center(
+                        child: GestureDetector(
                           onTap: _onMicTap,
                           behavior: HitTestBehavior.opaque,
                           child: _blob(),
                         ),
-                        const SizedBox(height: 34),
-                        Eyebrow(
-                          _statusLabel,
-                          color: _phase == _Phase.error
-                              ? AppTheme.error
-                              : AppTheme.muted,
-                        ),
-                        const SizedBox(height: 14),
-                        Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 26),
-                          child: _phase == _Phase.error
-                              ? _errorView()
-                              : _transcript(),
-                        ),
-                      ],
+                      ),
+                    ),
+                    Positioned(
+                      left: 0,
+                      right: 0,
+                      bottom: 112,
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Eyebrow(
+                            _statusLabel,
+                            color: _phase == _Phase.error
+                                ? AppTheme.error
+                                : AppTheme.muted,
+                          ),
+                          const SizedBox(height: 14),
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 26),
+                            child: _phase == _Phase.error
+                                ? _errorView()
+                                : _transcript(),
+                          ),
+                        ],
+                      ),
                     ),
                     Positioned(
                       left: 0,

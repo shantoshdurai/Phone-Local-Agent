@@ -62,6 +62,7 @@ class _ChatScreenState extends State<ChatScreen> {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
 
   bool _isTyping = false;
+  bool _webSearch = false;
   bool _isInitializing = true;
   int? _currentSessionId;
   List<Map<String, dynamic>> _sessions = [];
@@ -209,6 +210,7 @@ class _ChatScreenState extends State<ChatScreen> {
     }
     if (!mounted) return;
     try {
+      AssistantService.instance.playCue('listen');
       await _speechToText.listen(
         onResult: (result) {
           if (!mounted) return;
@@ -230,6 +232,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _stopListening() async {
     try {
+      AssistantService.instance.playCue('done');
       await _speechToText.stop();
     } catch (_) {}
     if (mounted) setState(() {});
@@ -628,19 +631,19 @@ class _ChatScreenState extends State<ChatScreen> {
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
-              leading: const Icon(Icons.photo_outlined, color: AppTheme.ink),
+              leading: Icon(Icons.photo_outlined, color: AppTheme.ink),
               title: Text('Photo from gallery',
                   style: GoogleFonts.interTight(color: AppTheme.ink)),
               onTap: () => Navigator.pop(ctx, 'gallery'),
             ),
             ListTile(
-              leading: const Icon(Icons.image_outlined, color: AppTheme.ink),
+              leading: Icon(Icons.image_outlined, color: AppTheme.ink),
               title: Text('Paste image from clipboard',
                   style: GoogleFonts.interTight(color: AppTheme.ink)),
               onTap: () => Navigator.pop(ctx, 'paste_image'),
             ),
             ListTile(
-              leading: const Icon(Icons.content_paste_rounded,
+              leading: Icon(Icons.content_paste_rounded,
                   color: AppTheme.ink),
               title: Text('Paste text',
                   style: GoogleFonts.interTight(color: AppTheme.ink)),
@@ -780,7 +783,12 @@ class _ChatScreenState extends State<ChatScreen> {
         await _dbService.updateSessionTitle(_currentSessionId!, newTitle);
         await _refreshSessions();
       }
-      final response = await _agentService.sendMessage(text, _currentSessionId!, imagePath: imagePath);
+      final response = await _agentService.sendMessage(
+        text,
+        _currentSessionId!,
+        imagePath: imagePath,
+        forceTool: _webSearch ? 'search_web' : null,
+      );
       if (mounted) {
         final hadStreamed = _streamingText.value.isNotEmpty;
         setState(() {
@@ -1037,7 +1045,7 @@ class _ChatScreenState extends State<ChatScreen> {
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           child: Row(
             children: [
-              const Icon(Icons.warning_amber_rounded,
+              Icon(Icons.warning_amber_rounded,
                   size: 14, color: AppTheme.error),
               const SizedBox(width: 8),
               Expanded(
@@ -1062,7 +1070,7 @@ class _ChatScreenState extends State<ChatScreen> {
   Widget _buildHeader() {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      decoration: const BoxDecoration(
+      decoration: BoxDecoration(
         border: Border(bottom: BorderSide(color: AppTheme.border)),
       ),
       child: Stack(
@@ -1110,21 +1118,33 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Widget _headerTitle() {
     if (_isCloud) {
-      return Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(
-            _headerName,
-            style: GoogleFonts.interTight(
-              fontSize: 18,
-              fontWeight: FontWeight.w600,
-              letterSpacing: -0.3,
-              color: AppTheme.ink,
-            ),
+      return InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => const HomeScreen()),
+          );
+        },
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                _headerName,
+                style: GoogleFonts.interTight(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: -0.3,
+                  color: AppTheme.ink,
+                ),
+              ),
+              const SizedBox(width: 8),
+              const Pill('CLOUD', style: PillStyle.outline),
+            ],
           ),
-          const SizedBox(width: 8),
-          const Pill('CLOUD', style: PillStyle.outline),
-        ],
+        ),
       );
     }
     return PopupMenuButton<String>(
@@ -1132,7 +1152,7 @@ class _ChatScreenState extends State<ChatScreen> {
       offset: const Offset(0, 40),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(14),
-        side: const BorderSide(color: AppTheme.border),
+        side: BorderSide(color: AppTheme.border),
       ),
       onSelected: (value) {
         if (value == '__manage__') {
@@ -1168,7 +1188,7 @@ class _ChatScreenState extends State<ChatScreen> {
           value: '__manage__',
           child: Row(
             children: [
-              const Icon(Icons.download_rounded, color: AppTheme.ink2, size: 18),
+              Icon(Icons.download_rounded, color: AppTheme.ink2, size: 18),
               const SizedBox(width: 12),
               Text('Manage models', style: GoogleFonts.interTight(color: AppTheme.ink)),
             ],
@@ -1189,7 +1209,7 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
           ),
           const SizedBox(width: 4),
-          const Icon(Icons.keyboard_arrow_down_rounded,
+          Icon(Icons.keyboard_arrow_down_rounded,
               color: AppTheme.muted, size: 18),
         ],
       ),
@@ -1258,7 +1278,7 @@ class _ChatScreenState extends State<ChatScreen> {
   Widget _buildComposer() {
     return Container(
       padding: const EdgeInsets.fromLTRB(12, 12, 12, 14),
-      decoration: const BoxDecoration(
+      decoration: BoxDecoration(
         border: Border(top: BorderSide(color: AppTheme.border)),
       ),
       child: Column(
@@ -1310,11 +1330,20 @@ class _ChatScreenState extends State<ChatScreen> {
                   padding: const EdgeInsets.symmetric(horizontal: 8),
                   decoration: BoxDecoration(
                     color: AppTheme.composerBg,
-                    borderRadius: BorderRadius.circular(24),
+                    borderRadius: BorderRadius.circular(26),
+                    border: Border.all(color: AppTheme.border),
                   ),
                   child: Row(
                     children: [
                       _circleIcon(Icons.add_rounded, 20, onTap: _showAttachSheet),
+                      const SizedBox(width: 2),
+                      _circleIcon(
+                        Icons.public_rounded,
+                        19,
+                        onTap: () => setState(() => _webSearch = !_webSearch),
+                        active: _webSearch,
+                      ),
+                      const SizedBox(width: 4),
                       Expanded(
                         child: TextField(
                           controller: _textController,
@@ -1328,7 +1357,7 @@ class _ChatScreenState extends State<ChatScreen> {
                           ),
                           cursorColor: AppTheme.ink,
                           decoration: InputDecoration(
-                            hintText: 'Ask Agent...',
+                            hintText: _webSearch ? 'Search web or ask Agent...' : 'Ask Agent...',
                             hintStyle: GoogleFonts.interTight(
                               color: Colors.white.withValues(alpha: 0.4),
                               fontSize: 15,
@@ -1348,8 +1377,8 @@ class _ChatScreenState extends State<ChatScreen> {
                       ),
                       _circleIcon(
                         _speechToText.isNotListening
-                            ? Icons.mic_none_rounded
-                            : Icons.mic_rounded,
+                            ? Icons.graphic_eq_rounded
+                            : Icons.stop_rounded,
                         18,
                         onTap: () => _speechToText.isNotListening
                             ? _startListening()
@@ -1395,7 +1424,7 @@ class _ChatScreenState extends State<ChatScreen> {
                               ? Icons.stop_rounded
                               : hasText
                                   ? Icons.arrow_upward_rounded
-                                  : Icons.mic_rounded,
+                                  : Icons.graphic_eq_rounded,
                           color: _isTyping ? Colors.white : AppTheme.bg,
                           size: _isTyping ? 18 : 20,
                         ),
@@ -1411,17 +1440,28 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  Widget _circleIcon(IconData icon, double size, {required VoidCallback onTap}) {
+  Widget _circleIcon(
+    IconData icon,
+    double size, {
+    required VoidCallback onTap,
+    bool active = false,
+  }) {
+    final isWebIcon = icon == Icons.public_rounded;
+    final color = active
+        ? AppTheme.ink
+        : (isWebIcon ? AppTheme.muted : AppTheme.ink);
     return SizedBox(
       width: 32,
       height: 32,
       child: Material(
-        color: Colors.transparent,
+        color: active
+            ? AppTheme.ink.withValues(alpha: 0.14)
+            : Colors.transparent,
         borderRadius: BorderRadius.circular(16),
         child: InkWell(
           borderRadius: BorderRadius.circular(16),
           onTap: onTap,
-          child: Icon(icon, size: size, color: AppTheme.ink),
+          child: Icon(icon, size: size, color: color),
         ),
       ),
     );
@@ -1451,7 +1491,7 @@ class _ChatScreenState extends State<ChatScreen> {
     return Drawer(
       backgroundColor: AppTheme.bg,
       width: MediaQuery.of(context).size.width * 0.86,
-      shape: const Border(
+      shape: Border(
           right: BorderSide(color: AppTheme.border)),
       child: SafeArea(
         child: Column(
@@ -1503,7 +1543,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
                 child: Row(
                   children: [
-                    const Icon(Icons.search_rounded,
+                    Icon(Icons.search_rounded,
                         size: 16, color: AppTheme.muted),
                     const SizedBox(width: 8),
                     Expanded(
@@ -1518,6 +1558,8 @@ class _ChatScreenState extends State<ChatScreen> {
                           hintStyle: GoogleFonts.interTight(
                               fontSize: 13, color: AppTheme.muted),
                           border: InputBorder.none,
+                          enabledBorder: InputBorder.none,
+                          focusedBorder: InputBorder.none,
                           isDense: true,
                           contentPadding:
                               const EdgeInsets.symmetric(vertical: 10),
@@ -1530,7 +1572,7 @@ class _ChatScreenState extends State<ChatScreen> {
                           _searchController.clear();
                           setState(() => _sessionQuery = '');
                         },
-                        child: const Icon(Icons.close_rounded,
+                        child: Icon(Icons.close_rounded,
                             size: 14, color: AppTheme.muted),
                       ),
                   ],
@@ -1607,7 +1649,7 @@ class _ChatScreenState extends State<ChatScreen> {
                               padding: EdgeInsets.zero,
                               iconSize: 16,
                               color: AppTheme.surface,
-                              icon: const Icon(Icons.more_horiz_rounded,
+                              icon: Icon(Icons.more_horiz_rounded,
                                   size: 18, color: AppTheme.muted),
                               onSelected: (value) {
                                 if (value == 'rename') _renameSession(session);
@@ -1636,9 +1678,43 @@ class _ChatScreenState extends State<ChatScreen> {
                 );
               }),
             ),
+            InkWell(
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const HomeScreen()),
+                );
+              },
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                decoration: BoxDecoration(
+                  border: Border(top: BorderSide(color: AppTheme.border)),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.hub_rounded, size: 18, color: AppTheme.ink2),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        'Model Hub (Open Models)',
+                        style: GoogleFonts.interTight(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w500,
+                          color: AppTheme.ink,
+                        ),
+                      ),
+                    ),
+                    Icon(Icons.chevron_right_rounded,
+                        size: 18, color: AppTheme.muted),
+                  ],
+                ),
+              ),
+            ),
             Container(
               padding: const EdgeInsets.fromLTRB(20, 14, 20, 14),
-              decoration: const BoxDecoration(
+              decoration: BoxDecoration(
                 border: Border(top: BorderSide(color: AppTheme.border)),
               ),
               child: Row(
@@ -1683,7 +1759,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     ),
                   ),
                   IconButton(
-                    icon: const Icon(Icons.settings_outlined,
+                    icon: Icon(Icons.settings_outlined,
                         color: AppTheme.ink2, size: 18),
                     onPressed: () {
                       Navigator.pop(context);
@@ -1851,7 +1927,7 @@ class _ChatBootstrapping extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Center(
+    return Center(
       child: SizedBox(
         width: 20,
         height: 20,

@@ -17,6 +17,7 @@ abstract class RemoteAgent {
     String text,
     int sessionId, {
     String? imagePath,
+    String? forceTool,
   });
 }
 

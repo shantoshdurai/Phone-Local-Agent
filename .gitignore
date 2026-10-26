@@ -64,3 +64,6 @@ android/app/upload-keystore.jks
 # Permission-repair reports from the sandbox diagnostic.
 .acl-recovery/
 
+
+*.apk
+*.aab

@@ -19,6 +19,7 @@ import 'services/model_registry.dart';
 import 'services/permission_flow.dart';
 import 'services/startup_trace.dart';
 import 'theme/app_theme.dart';
+import 'theme/theme_controller.dart';
 
 void main() async {
   StartupTrace.mark('app_main');
@@ -32,6 +33,7 @@ void main() async {
   // Reuse the instance that is already open — no extra platform round trip.
   // ignore: discarded_futures
   AppSettings.load();
+  await ThemeController.instance.load();
   final onboardingSeen = prefs.getBool(kOnboardingSeenPref) ?? false;
   final provider = await ProviderStore.readProvider();
   final hasRemoteCredential = provider == LlmProvider.local
@@ -170,12 +172,17 @@ class _MyAppState extends State<MyApp> {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Local Agent',
-      debugShowCheckedModeBanner: false,
-      navigatorKey: _navigatorKey,
-      theme: AppTheme.darkTheme,
-      home: _resolveHome(),
+    // Rebuilding the whole MaterialApp on a palette change repaints every
+    // screen while keeping navigation and state intact.
+    return ValueListenableBuilder<AppPalette>(
+      valueListenable: ThemeController.instance,
+      builder: (context, palette, _) => MaterialApp(
+        title: 'Agent',
+        debugShowCheckedModeBanner: false,
+        navigatorKey: _navigatorKey,
+        theme: AppTheme.darkTheme,
+        home: _resolveHome(),
+      ),
     );
   }
 }

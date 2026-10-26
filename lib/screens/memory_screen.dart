@@ -138,7 +138,7 @@ class _MemoryScreenState extends State<MemoryScreen> {
             ),
             Expanded(
               child: _loading
-                  ? const Center(
+                  ? Center(
                       child: SizedBox(
                         width: 20,
                         height: 20,
@@ -216,6 +216,8 @@ class _MemoryScreenState extends State<MemoryScreen> {
                 hintStyle:
                     GoogleFonts.interTight(fontSize: 13.5, color: AppTheme.muted2),
                 border: InputBorder.none,
+                enabledBorder: InputBorder.none,
+                focusedBorder: InputBorder.none,
                 isDense: true,
                 contentPadding: const EdgeInsets.symmetric(vertical: 12),
               ),
@@ -242,7 +244,7 @@ class _MemoryScreenState extends State<MemoryScreen> {
       padding: const EdgeInsets.symmetric(vertical: 28),
       child: Column(
         children: [
-          const Icon(Icons.psychology_outlined, size: 26, color: AppTheme.muted2),
+          Icon(Icons.psychology_outlined, size: 26, color: AppTheme.muted2),
           const SizedBox(height: 12),
           Text(
             'Nothing yet.',
@@ -293,7 +295,7 @@ class _MemoryScreenState extends State<MemoryScreen> {
           IconButton(
             tooltip: 'Forget this',
             onPressed: () => _delete(fact),
-            icon: const Icon(Icons.close_rounded, size: 16, color: AppTheme.muted),
+            icon: Icon(Icons.close_rounded, size: 16, color: AppTheme.muted),
           ),
         ],
       ),

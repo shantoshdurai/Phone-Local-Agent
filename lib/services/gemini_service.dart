@@ -105,6 +105,7 @@ class GeminiService implements RemoteAgent {
     String text,
     int sessionId, {
     String? imagePath,
+    String? forceTool,
   }) async {
     if (_chat == null) throw Exception('Gemini not initialized');
     _statusController.add('Thinking...');
